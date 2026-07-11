@@ -81,3 +81,29 @@ Layering: `core` (pure parse/classify/sample, table+fuzz tested) ← `probe`
 (orchestration over a `Git` port, fake-tested) ← `git` (os/exec adapter,
 real-git integration tested) ← `cli` (cobra). A successful probe exits 0 whether
 or not it merges cleanly; the verdict is `.mergeable` in the payload.
+
+Hardening from an adversarial multi-lens review (each finding reproduced against
+git 2.53 before fixing):
+
+4. **`clean_merges` / `both_touched_clean` subtract a conflict *footprint*, not a
+   count.** git parks file/dir and some rename conflicts under a synthetic stage
+   path (e.g. `d~ours`) absent from either diff, so `|union| - |conflictedSet|`
+   cancels unrelated real paths. The footprint is the union of stage paths and
+   the real paths named in each **CONFLICT** info message (`d~ours`'s message
+   lists `d`), subtracted by set membership. Only CONFLICT-type messages count —
+   an `Auto-merging <path>` message names a file that merged *cleanly*, which is
+   exactly a `both_touched_clean` file and must not be excluded (a re-review
+   caught the first cut wrongly folding those in).
+5. **Unrelated histories are graceful, not an internal error.** `merge-tree`
+   without `--allow-unrelated-histories` fatals (exit 128), which mapped to
+   CodeInternal (exit 3). The flag makes disjoint refs merge as add/add against
+   the empty base; `MergeBase` then returns no ancestor, `merge_base` is omitted,
+   and both_touched/clean_merges diff against the empty tree.
+6. **Oversized blobs are size-checked, never slurped.** A conflicted blob over 16
+   MiB is flagged `truncated` with no inline sample instead of being read whole
+   into memory (`cat-file -s` before `-p`) — the JSON stays bounded even when a
+   multi-hundred-MB generated file / lockfile / dump conflicts. (git's own
+   in-memory merge of such a file is a separate, inherent cost.)
+7. **A stdout write failure is IO (exit 3), not usage (exit 2).** `RunE` wraps the
+   write error as a `*core.Error{CodeInternal}` so the cobra→validation fallback
+   in `Execute` applies only to genuine flag/arg parse errors.

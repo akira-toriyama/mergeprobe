@@ -107,7 +107,13 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return prettifyRefError(err, topic)
 			}
-			return writeJSON(cmd.OutOrStdout(), report)
+			// Classify a stdout write failure as internal/IO (a bare error here
+			// would otherwise fall through to the cobra->validation mapping in
+			// run()); this keeps RunE's contract of always returning *core.Error.
+			if err := writeJSON(cmd.OutOrStdout(), report); err != nil {
+				return core.Internalf("output-write", "writing result: %v", err)
+			}
+			return nil
 		},
 	}
 	root.Flags().StringVar(&onto, "onto", "", "ref the topic lands on (default: origin/HEAD)")

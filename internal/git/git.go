@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
@@ -119,9 +120,11 @@ func (r *Repo) DefaultBase(ctx context.Context) (string, error) {
 }
 
 // MergeTree runs the in-memory merge. Exit 0 = clean, exit 1 = conflicted; any
-// other code is a hard failure.
+// other code is a hard failure. --allow-unrelated-histories lets refs with no
+// common ancestor merge (as add/add against the empty base) instead of git
+// refusing with exit 128, so the probe reports them gracefully.
 func (r *Repo) MergeTree(ctx context.Context, base, topic string) ([]byte, bool, error) {
-	out, errb, code, err := r.run(ctx, "merge-tree", "--write-tree", "-z", base, topic)
+	out, errb, code, err := r.run(ctx, "merge-tree", "--write-tree", "--allow-unrelated-histories", "-z", base, topic)
 	if err != nil {
 		return nil, false, err
 	}
@@ -173,6 +176,24 @@ func (r *Repo) ShowBlob(ctx context.Context, treeish, path string) ([]byte, erro
 		return nil, gitError("cat-file", errb, code)
 	}
 	return out, nil
+}
+
+// BlobSize returns the byte size of <treeish>:<path> without reading its
+// content. A path absent from the tree (e.g. a modify/delete surviving on the
+// other side) yields a cat-file error the caller degrades to "no sample".
+func (r *Repo) BlobSize(ctx context.Context, treeish, path string) (int64, error) {
+	out, errb, code, err := r.run(ctx, "cat-file", "-s", treeish+":"+path)
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, gitError("cat-file", errb, code)
+	}
+	n, perr := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if perr != nil {
+		return 0, core.Internalf("cat-file-size", "unparseable object size %q: %v", out, perr)
+	}
+	return n, nil
 }
 
 // splitNUL splits NUL-delimited output into fields, dropping the trailing empty

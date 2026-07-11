@@ -8,6 +8,7 @@ package probe
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
 )
@@ -35,6 +36,10 @@ type Git interface {
 	// ShowBlob returns the content of <treeish>:<path> (the merged tree carries
 	// conflict markers for text files).
 	ShowBlob(ctx context.Context, treeish, path string) ([]byte, error)
+	// BlobSize returns the byte size of <treeish>:<path> without reading its
+	// content, so an oversized conflicted blob is skipped before it is loaded
+	// into memory.
+	BlobSize(ctx context.Context, treeish, path string) (size int64, err error)
 }
 
 // Options is a resolved probe request. Empty Topic means HEAD; empty Base means
@@ -53,6 +58,11 @@ const (
 	drillSampleLines = 400
 	// mergeBaseShortLen is how much of the merge-base OID the report shows.
 	mergeBaseShortLen = 12
+	// maxBlobBytes caps how large a merged conflict blob may be before mergeprobe
+	// reads it. A file over this is flagged truncated with no inline sample rather
+	// than loaded whole into memory — the tool's output stays bounded even when a
+	// giant generated file / lockfile / dump conflicts.
+	maxBlobBytes = 16 << 20 // 16 MiB
 )
 
 // Run executes the probe and returns the assembled report. It resolves the
@@ -127,11 +137,29 @@ func Run(ctx context.Context, g Git, opts Options) (core.Report, error) {
 		conflictedSet[f.Path] = true
 	}
 
-	report.BothTouchedClean = bothTouchedClean(baseChanged, topicChanged, conflictedSet)
-	report.CleanMerges = len(union(baseChanged, topicChanged)) - len(conflictedSet)
-	if report.CleanMerges < 0 {
-		report.CleanMerges = 0
+	// The conflict footprint is every path a conflict names — the (possibly
+	// synthetic, e.g. "X~ours") stage paths plus the real paths from CONFLICT
+	// info messages. clean_merges and both_touched_clean subtract this footprint
+	// by set membership, never by cardinality: git parks file/dir and some rename
+	// conflicts under names absent from either diff, so |union| - |conflictedSet|
+	// would cancel unrelated real paths. Only CONFLICT-type messages count —
+	// "Auto-merging <path>" names a file that merged CLEANLY, which is exactly a
+	// both_touched_clean file and must not be excluded.
+	footprint := make(map[string]bool, len(conflictedSet))
+	for p := range conflictedSet {
+		footprint[p] = true
 	}
+	for _, m := range parsed.Messages {
+		if !strings.HasPrefix(m.Type, "CONFLICT") {
+			continue
+		}
+		for _, p := range m.Paths {
+			footprint[p] = true
+		}
+	}
+
+	report.BothTouchedClean = bothTouchedClean(baseChanged, topicChanged, footprint)
+	report.CleanMerges = countNotIn(union(baseChanged, topicChanged), footprint)
 
 	// Drill-down mode: isolate the one requested path and emit its fuller sample.
 	if opts.Path != "" {
@@ -163,6 +191,17 @@ func Run(ctx context.Context, g Git, opts Options) (core.Report, error) {
 // sample spans every hunk (drill-down); otherwise just the first.
 func buildConflict(ctx context.Context, g Git, tree string, f core.ConflictFile, maxLines int, allHunks bool) core.Conflict {
 	c := core.Conflict{Path: f.Path, Class: core.Classify(f)}
+	// Check the blob size before reading it: a modify/delete leaves no content
+	// (size query errors — degrade to no sample), and an oversized blob is flagged
+	// truncated without ever being loaded into memory.
+	size, err := g.BlobSize(ctx, tree, f.Path)
+	if err != nil || size == 0 {
+		return c
+	}
+	if size > maxBlobBytes {
+		c.Truncated = true
+		return c
+	}
 	blob, err := g.ShowBlob(ctx, tree, f.Path)
 	if err != nil || len(blob) == 0 {
 		return c
@@ -202,9 +241,10 @@ func shorten(oid string) string {
 	return oid
 }
 
-// bothTouchedClean returns the paths both sides changed that are not conflicted
-// — the semantic-conflict blind spot. Sorted for stable output.
-func bothTouchedClean(a, b []string, conflicted map[string]bool) []string {
+// bothTouchedClean returns the paths both sides changed that are not part of the
+// conflict footprint — the semantic-conflict blind spot. Sorted for stable
+// output.
+func bothTouchedClean(a, b []string, footprint map[string]bool) []string {
 	bset := make(map[string]bool, len(b))
 	for _, p := range b {
 		bset[p] = true
@@ -212,7 +252,7 @@ func bothTouchedClean(a, b []string, conflicted map[string]bool) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, p := range a {
-		if bset[p] && !conflicted[p] && !seen[p] {
+		if bset[p] && !footprint[p] && !seen[p] {
 			seen[p] = true
 			out = append(out, p)
 		}
@@ -231,4 +271,15 @@ func union(a, b []string) map[string]bool {
 		u[p] = true
 	}
 	return u
+}
+
+// countNotIn counts members of set that are absent from exclude.
+func countNotIn(set, exclude map[string]bool) int {
+	n := 0
+	for p := range set {
+		if !exclude[p] {
+			n++
+		}
+	}
+	return n
 }

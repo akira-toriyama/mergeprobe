@@ -156,6 +156,53 @@ func TestDefaultBase(t *testing.T) {
 	}
 }
 
+func TestBlobSize(t *testing.T) {
+	dir := scenario(t)
+	r := New(dir)
+	out, _, _ := r.MergeTree(context.Background(), "ours", "theirs")
+	mt, err := core.ParseMergeTreeZ(out)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	size, err := r.BlobSize(context.Background(), mt.Tree, "f.txt")
+	if err != nil {
+		t.Fatalf("BlobSize: %v", err)
+	}
+	blob, _ := r.ShowBlob(context.Background(), mt.Tree, "f.txt")
+	if size != int64(len(blob)) {
+		t.Errorf("BlobSize = %d, ShowBlob len = %d", size, len(blob))
+	}
+	if _, err := r.BlobSize(context.Background(), "main", "does/not/exist"); err == nil {
+		t.Error("BlobSize of a missing path should error")
+	}
+}
+
+// Unrelated histories must merge (as add/add) rather than git refusing with exit
+// 128 — so the probe reports them gracefully instead of a spurious internal error.
+func TestMergeTree_UnrelatedHistories(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "from main\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "main")
+	gittest.Run(t, dir, "checkout", "-q", "--orphan", "island")
+	gittest.Run(t, dir, "rm", "-rfq", ".")
+	gittest.Write(t, dir, "a.txt", "from island\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "island")
+
+	r := New(dir)
+	_, conflicted, err := r.MergeTree(context.Background(), "main", "island")
+	if err != nil {
+		t.Fatalf("MergeTree on unrelated histories errored (want a graceful conflict): %v", err)
+	}
+	if !conflicted {
+		t.Error("unrelated histories with divergent a.txt should conflict, not merge clean")
+	}
+	if _, ok, _ := r.MergeBase(context.Background(), "main", "island"); ok {
+		t.Error("unrelated histories should have no merge base")
+	}
+}
+
 func TestNotARepo(t *testing.T) {
 	gittest.SkipIfNoGit(t)
 	r := New(t.TempDir()) // empty dir, no repo

@@ -49,8 +49,9 @@ type Conflict struct {
 	// Sample is a bounded excerpt of the first conflict region with its markers,
 	// for a one-glance read. Empty when there is nothing textual to show.
 	Sample string `json:"sample,omitempty"`
-	// Truncated is true when Sample was capped; use --path for the full region.
-	// Omitted when false.
+	// Truncated is true when the full conflict content is not in Sample — either
+	// the sample was capped mid-region (use --path for the rest) or the blob was
+	// too large to read at all (inspect the file directly). Omitted when false.
 	Truncated bool `json:"truncated,omitempty"`
 }
 

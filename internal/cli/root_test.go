@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -169,5 +170,26 @@ func TestEndToEnd_TooManyArgs(t *testing.T) {
 	_, _, code := runCLI(t, dir, "a", "b")
 	if code != int(core.CodeValidation) {
 		t.Errorf("exit = %d, want 2 for too many args", code)
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// A stdout write failure is an IO error (exit 3), not a usage error (exit 2):
+// the cobra→validation fallback in run() must apply only to bare cobra parse
+// errors, never to a RunE result.
+func TestEndToEnd_StdoutWriteErrorIsInternal(t *testing.T) {
+	dir := gittest.ConflictRepo(t)
+	oldRepo, oldOut, oldErr := newRepo, out, errOut
+	var berr bytes.Buffer
+	newRepo = func() probe.Git { return git.New(dir) }
+	out, errOut = failWriter{}, &berr
+	defer func() { newRepo, out, errOut = oldRepo, oldOut, oldErr }()
+
+	code := run(context.Background(), []string{"ours", "--onto", "main"}) // a clean probe that reaches writeJSON
+	if code != int(core.CodeInternal) {
+		t.Errorf("exit = %d, want 3 (internal/IO) for a stdout write failure", code)
 	}
 }
