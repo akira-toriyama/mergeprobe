@@ -45,6 +45,11 @@ linters:
         linters:
           - errcheck
           - gosec
+      # gittest is test-only support code (imported only from _test files); its
+      # git exec surface is not a security boundary, same rationale as above.
+      - path: internal/gittest/
+        linters:
+          - gosec
 
 formatters:
   enable:
