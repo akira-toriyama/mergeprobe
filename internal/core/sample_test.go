@@ -21,7 +21,7 @@ func TestConflictHunks(t *testing.T) {
 		"theirs 2\n" +
 		">>>>>>> topic\n" +
 		"suffix\n")
-	hunks, count := ConflictHunks(blob)
+	hunks, count := ConflictHunks(blob, DefaultMarkerSize)
 	if count != 2 {
 		t.Fatalf("hunk count = %d, want 2", count)
 	}
@@ -38,7 +38,7 @@ func TestConflictHunks(t *testing.T) {
 
 // No markers → zero hunks (a clean-but-both-touched file, or binary).
 func TestConflictHunks_None(t *testing.T) {
-	if hunks, count := ConflictHunks([]byte("just\ntext\n")); count != 0 || len(hunks) != 0 {
+	if hunks, count := ConflictHunks([]byte("just\ntext\n"), DefaultMarkerSize); count != 0 || len(hunks) != 0 {
 		t.Errorf("no-marker blob returned %d hunks", count)
 	}
 }
@@ -47,7 +47,7 @@ func TestConflictHunks_None(t *testing.T) {
 // captures to end of input rather than panicking or dropping it.
 func TestConflictHunks_Unterminated(t *testing.T) {
 	blob := []byte("<<<<<<< base\nours\n=======\ntheirs\n")
-	hunks, count := ConflictHunks(blob)
+	hunks, count := ConflictHunks(blob, DefaultMarkerSize)
 	if count != 1 || len(hunks) != 1 {
 		t.Fatalf("unterminated: count=%d hunks=%d", count, len(hunks))
 	}
@@ -115,5 +115,32 @@ func TestBoundedSampleAll(t *testing.T) {
 	}
 	if s2, _ := BoundedSampleAll(nil, 400); s2 != "" {
 		t.Errorf("empty hunks: %q", s2)
+	}
+}
+
+// The trimmed-region notice must be mode-appropriate. The summary points at
+// --path (there IS more detail to fetch); the drill-down must NOT — the caller
+// is already in --path, so it points at the file instead of giving circular
+// advice.
+func TestBoundedSample_TrimNoticeIsModeAppropriate(t *testing.T) {
+	var big strings.Builder
+	big.WriteString("<<<<<<< base\n")
+	for i := 0; i < 500; i++ {
+		big.WriteString("line\n")
+	}
+	big.WriteString(">>>>>>> topic\n")
+	hunk := []string{big.String()}
+
+	summary, strunc := BoundedSample(hunk, 20)
+	if !strunc || !strings.Contains(summary, "--path") {
+		t.Errorf("summary trim notice should point at --path: %q", summary)
+	}
+
+	drill, dtrunc := BoundedSampleAll(hunk, 20)
+	if !dtrunc {
+		t.Fatal("drill-down of a huge hunk should truncate")
+	}
+	if strings.Contains(drill, "--path") {
+		t.Errorf("drill-down trim notice must not give circular --path advice: %q", drill)
 	}
 }

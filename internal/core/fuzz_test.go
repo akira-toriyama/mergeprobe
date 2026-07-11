@@ -41,12 +41,14 @@ func FuzzConflictHunks(f *testing.F) {
 	f.Add([]byte("no markers here\n"))
 	f.Add([]byte("<<<<<<< unterminated\n"))
 	f.Fuzz(func(t *testing.T, blob []byte) {
-		hunks, n := ConflictHunks(blob)
+		hunks, n := ConflictHunks(blob, DefaultMarkerSize)
 		if n != len(hunks) {
 			t.Fatalf("count %d != len(hunks) %d", n, len(hunks))
 		}
-		if _, _ = BoundedSample(hunks, 20); false {
-			t.Fatal("unreachable")
-		}
+		// Exercise both bounded-sample extractors on the parsed hunks purely to
+		// prove neither panics on arbitrary input; the fuzz harness itself is the
+		// assertion, so the results are discarded.
+		_, _ = BoundedSample(hunks, 20)
+		_, _ = BoundedSampleAll(hunks, 20)
 	})
 }

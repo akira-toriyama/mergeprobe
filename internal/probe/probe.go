@@ -40,6 +40,11 @@ type Git interface {
 	// content, so an oversized conflicted blob is skipped before it is loaded
 	// into memory.
 	BlobSize(ctx context.Context, treeish, path string) (size int64, err error)
+	// ConflictMarkerSize returns the effective conflict-marker-size for path in
+	// tree (7 by default; smaller when the conflict-marker-size gitattribute
+	// lowered it, which merge-tree honors), so a shorter-marker conflict is still
+	// parsed into hunks and a sample.
+	ConflictMarkerSize(ctx context.Context, tree, path string) (size int, err error)
 	// Fetch retrieves ref from source (a remote name or URL) and returns the
 	// fetched commit OID, so a PR head/base is pinned before it is probed. A
 	// missing remote ref is a not-found error.
@@ -237,7 +242,17 @@ func buildConflict(ctx context.Context, g Git, tree string, f core.ConflictFile,
 		c.Binary = true
 		return c
 	}
-	hunks, n := core.ConflictHunks(blob)
+	hunks, n := core.ConflictHunks(blob, core.DefaultMarkerSize)
+	if n == 0 {
+		// A readable text conflict with no default-size markers may carry a
+		// smaller conflict-marker-size (the gitattribute merge-tree obeys). Ask
+		// git for the effective size and retry once — only this rare non-default
+		// case pays for the extra lookup; a genuinely marker-less blob (e.g. a
+		// modify/delete's surviving content) just gets 7 back and stays at 0.
+		if ms, err := g.ConflictMarkerSize(ctx, tree, f.Path); err == nil && ms != core.DefaultMarkerSize {
+			hunks, n = core.ConflictHunks(blob, ms)
+		}
+	}
 	c.Hunks = n
 	if allHunks {
 		c.Sample, c.Truncated = core.BoundedSampleAll(hunks, maxLines)

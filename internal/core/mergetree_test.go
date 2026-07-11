@@ -153,7 +153,12 @@ func TestParseMergeTreeZ_Malformed(t *testing.T) {
 		{"bad-entry-no-tab", z("aaaa", "100644 1111 1 notab.txt", "")},
 		{"bad-entry-short", z("aaaa", "100644 1\tf.txt", "")},
 		{"bad-stage", z("aaaa", "100644 1111111111111111111111111111111111111111 9\tf.txt", "")},
+		{"empty-path", z("aaaa", "100644 1111111111111111111111111111111111111111 1\t", "")},
 		{"truncated-message-count", z("aaaa", "100644 1111111111111111111111111111111111111111 1\tf.txt", "", "2", "only-one-path")},
+		// A message path-count over maxInfoPaths (or wide enough to overflow int)
+		// must be rejected, not used as a slice bound — the maxInfoPaths guard.
+		{"giant-message-count", z("aaaa", "100644 1111111111111111111111111111111111111111 1\tf.txt", "", "9999999", "p")},
+		{"overflow-message-count", z("aaaa", "100644 1111111111111111111111111111111111111111 1\tf.txt", "", "99999999999999999999", "p")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

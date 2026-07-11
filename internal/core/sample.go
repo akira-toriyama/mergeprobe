@@ -11,30 +11,38 @@ import (
 // those markers. It is pure: the git blob is fetched by the adapter and handed
 // in here.
 
-const (
-	markerStart = "<<<<<<<" // opening conflict marker (git's default 7-char size)
-	markerEnd   = ">>>>>>>" // closing conflict marker
-)
+// DefaultMarkerSize is git's default conflict-marker-size: the number of marker
+// characters in <<<<<<< / ======= / >>>>>>>. A file can lower it via the
+// conflict-marker-size gitattribute, and merge-tree honors that, so the size is
+// not a constant — ConflictHunks takes the effective size for the file.
+const DefaultMarkerSize = 7
 
-// ConflictHunks returns each <<<<<<< … >>>>>>> region in blob (markers
-// included) and their count. A blob with no markers — a clean-but-both-touched
-// file, or a binary file — yields zero hunks. An unterminated opening marker is
-// captured through end-of-input rather than dropped, so malformed content is
-// still surfaced.
-func ConflictHunks(blob []byte) ([]string, int) {
+// ConflictHunks returns each conflict region in blob (its markers included) and
+// their count. markerSize is the file's effective conflict-marker-size (7 by
+// default; smaller when the conflict-marker-size gitattribute lowered it, which
+// merge-tree obeys) — a value < 1 is treated as the default. A blob with no
+// markers — a clean-but-both-touched file, or a binary file — yields zero hunks.
+// An unterminated opening marker is captured through end-of-input rather than
+// dropped, so malformed content is still surfaced.
+func ConflictHunks(blob []byte, markerSize int) ([]string, int) {
+	if markerSize < 1 {
+		markerSize = DefaultMarkerSize
+	}
+	start := strings.Repeat("<", markerSize)
+	end := strings.Repeat(">", markerSize)
 	lines := splitLinesKeepNL(blob)
 	var hunks []string
 	var cur strings.Builder
 	inHunk := false
 	for _, ln := range lines {
 		switch {
-		case !inHunk && strings.HasPrefix(ln, markerStart):
+		case !inHunk && strings.HasPrefix(ln, start):
 			inHunk = true
 			cur.Reset()
 			cur.WriteString(ln)
 		case inHunk:
 			cur.WriteString(ln)
-			if strings.HasPrefix(ln, markerEnd) {
+			if strings.HasPrefix(ln, end) {
 				hunks = append(hunks, cur.String())
 				inHunk = false
 			}
@@ -55,7 +63,8 @@ func BoundedSample(hunks []string, maxLines int) (sample string, truncated bool)
 	if len(hunks) == 0 {
 		return "", false
 	}
-	return boundLines(hunks[0], maxLines)
+	// Summary mode: there IS more to fetch, so point the reader at --path.
+	return boundLines(hunks[0], maxLines, "use --path for full detail")
 }
 
 // BoundedSampleAll renders every hunk (for --path drill-down) concatenated in
@@ -64,12 +73,15 @@ func BoundedSampleAll(hunks []string, maxLines int) (sample string, truncated bo
 	if len(hunks) == 0 {
 		return "", false
 	}
-	return boundLines(strings.Join(hunks, ""), maxLines)
+	// Drill-down mode: the caller is already in --path, so re-running it yields
+	// the same cap. Point at the file, not back at --path.
+	return boundLines(strings.Join(hunks, ""), maxLines, "inspect the file directly")
 }
 
 // boundLines caps a single block to maxLines, preserving the first and last
-// lines (the conflict markers) around a "… N lines trimmed …" notice.
-func boundLines(block string, maxLines int) (string, bool) {
+// lines (the conflict markers) around a "… N lines trimmed …" notice. hint is
+// the mode-appropriate pointer for retrieving what was trimmed.
+func boundLines(block string, maxLines int, hint string) (string, bool) {
 	lines := splitLinesKeepNL([]byte(block))
 	if maxLines < 1 || len(lines) <= maxLines {
 		return block, false
@@ -86,7 +98,7 @@ func boundLines(block string, maxLines int) (string, bool) {
 	for _, ln := range lines[:head] {
 		b.WriteString(ln)
 	}
-	fmt.Fprintf(&b, "……… %d lines trimmed by mergeprobe (use --path for full detail) ………\n", trimmed)
+	fmt.Fprintf(&b, "……… %d lines trimmed by mergeprobe (%s) ………\n", trimmed, hint)
 	b.WriteString(lines[len(lines)-1]) // the closing marker line
 	return b.String(), true
 }
