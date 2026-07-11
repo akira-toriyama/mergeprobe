@@ -1,0 +1,192 @@
+// Package git is the read-only git adapter that satisfies probe.Git by shelling
+// out to the git binary. It captures each child's stdout/stderr into its own
+// buffers (never inheriting the parent's), classifies failures as *core.Error at
+// the point they happen, and forces LC_ALL=C so diagnostics are stable. It holds
+// no domain logic — parsing and verdicts live in core/probe.
+//
+// merge-tree --write-tree writes tree/blob objects into .git/objects but never
+// touches the index, HEAD, or the worktree, so the "worktree untouched" promise
+// holds; the loose objects are harmless and garbage-collected.
+package git
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os/exec"
+	"strings"
+
+	"github.com/akira-toriyama/mergeprobe/internal/core"
+)
+
+// Repo runs git commands in dir (empty = the process working directory, letting
+// git discover the repo upward).
+type Repo struct {
+	dir string
+	bin string
+}
+
+// New returns a Repo rooted at dir (use "" for the current working directory).
+func New(dir string) *Repo { return &Repo{dir: dir, bin: "git"} }
+
+// run executes git with args, returning stdout, stderr, the exit code, and a
+// start error (nonzero exit is not itself an error here — callers decide what a
+// given code means). LC_ALL=C keeps messages/collation stable.
+func (r *Repo) run(ctx context.Context, args ...string) (stdout, stderr []byte, code int, startErr error) {
+	// #nosec G204 -- args are a fixed git subcommand plus refs/paths that are
+	// either git-derived or validated by the caller (no leading dash; see
+	// probe.validateRef and the --end-of-options guards below). No shell is
+	// involved: exec passes an explicit argv, so there is no shell injection.
+	cmd := exec.CommandContext(ctx, r.bin, args...)
+	cmd.Dir = r.dir
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C")
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	code = 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			// git failed to start (not installed, permission) — a real internal
+			// failure distinct from any git exit code.
+			return out.Bytes(), errb.Bytes(), -1, core.Internalf("git-exec",
+				"could not run git: %v", err)
+		}
+	}
+	return out.Bytes(), errb.Bytes(), code, nil
+}
+
+// gitError classifies a git failure by its stderr into the exit-code contract.
+func gitError(id string, stderr []byte, code int) error {
+	msg := distill(stderr)
+	if strings.Contains(msg, "not a git repository") {
+		return core.Validationf("not-a-repo", "not inside a git repository")
+	}
+	return core.Internalf(id, "git failed (exit %d): %s", code, msg)
+}
+
+// distill reduces git's stderr to its most diagnostic single line: the first
+// fatal:/error:/warning: line, else the last non-empty line, else "".
+func distill(stderr []byte) string {
+	lines := strings.Split(strings.TrimRight(string(stderr), "\n"), "\n")
+	last := ""
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		last = t
+		if strings.HasPrefix(t, "fatal:") || strings.HasPrefix(t, "error:") {
+			return t
+		}
+	}
+	return last
+}
+
+// ResolveCommit resolves ref to a commit OID, returning a validation error for
+// an unknown ref.
+func (r *Repo) ResolveCommit(ctx context.Context, ref string) (string, error) {
+	// --end-of-options makes a ref that looks like a flag (e.g. "-x") parse as a
+	// literal rev rather than an option, so it fails to resolve instead of being
+	// misinterpreted.
+	out, errb, code, err := r.run(ctx, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if code == 1 {
+		return "", core.Validationf("unknown-ref", "cannot resolve %q to a commit", ref)
+	}
+	if code != 0 {
+		return "", gitError("rev-parse", errb, code)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// DefaultBase resolves the ref a topic lands on by default: git's origin/HEAD.
+func (r *Repo) DefaultBase(ctx context.Context) (string, error) {
+	out, _, code, err := r.run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", core.Validationf("no-default-base",
+			"cannot determine the default base (origin/HEAD is unset); pass --onto <ref>")
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// MergeTree runs the in-memory merge. Exit 0 = clean, exit 1 = conflicted; any
+// other code is a hard failure.
+func (r *Repo) MergeTree(ctx context.Context, base, topic string) ([]byte, bool, error) {
+	out, errb, code, err := r.run(ctx, "merge-tree", "--write-tree", "-z", base, topic)
+	if err != nil {
+		return nil, false, err
+	}
+	switch code {
+	case 0:
+		return out, false, nil
+	case 1:
+		return out, true, nil
+	default:
+		return nil, false, gitError("merge-tree", errb, code)
+	}
+}
+
+// MergeBase returns the common ancestor, ok=false when the refs are unrelated.
+func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, bool, error) {
+	out, errb, code, err := r.run(ctx, "merge-base", "--end-of-options", a, b)
+	if err != nil {
+		return "", false, err
+	}
+	switch code {
+	case 0:
+		return strings.TrimSpace(string(out)), true, nil
+	case 1:
+		return "", false, nil
+	default:
+		return "", false, gitError("merge-base", errb, code)
+	}
+}
+
+// DiffNames lists paths that differ between from and to.
+func (r *Repo) DiffNames(ctx context.Context, from, to string) ([]string, error) {
+	out, errb, code, err := r.run(ctx, "diff", "--name-only", "-z", "--end-of-options", from, to)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, gitError("diff", errb, code)
+	}
+	return splitNUL(out), nil
+}
+
+// ShowBlob returns the content of <treeish>:<path>.
+func (r *Repo) ShowBlob(ctx context.Context, treeish, path string) ([]byte, error) {
+	out, errb, code, err := r.run(ctx, "cat-file", "-p", treeish+":"+path)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, gitError("cat-file", errb, code)
+	}
+	return out, nil
+}
+
+// splitNUL splits NUL-delimited output into fields, dropping the trailing empty
+// element git leaves after the final terminator.
+func splitNUL(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	parts := strings.Split(string(b), "\x00")
+	if n := len(parts); n > 0 && parts[n-1] == "" {
+		parts = parts[:n-1]
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return parts
+}
