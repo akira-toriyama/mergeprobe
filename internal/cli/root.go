@@ -16,19 +16,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
+	"github.com/akira-toriyama/mergeprobe/internal/forge"
 	"github.com/akira-toriyama/mergeprobe/internal/git"
 	"github.com/akira-toriyama/mergeprobe/internal/probe"
 	"github.com/akira-toriyama/mergeprobe/internal/version"
 )
 
-// The real git adapter must satisfy the probe port; fail the build if it drifts.
-var _ probe.Git = (*git.Repo)(nil)
+// The real adapters must satisfy the probe ports; fail the build if they drift.
+var (
+	_ probe.Git   = (*git.Repo)(nil)
+	_ probe.Forge = (*forge.GH)(nil)
+)
 
 // newRepo builds the git adapter the root command probes with. Production roots
 // it at the process working directory (git discovers the repo upward); tests
 // override it to root a real adapter at a temporary repository, so the full
 // stack is exercised against real git without a chdir.
 var newRepo = func() probe.Git { return git.New("") }
+
+// newForge builds the optional GitHub-metadata adapter used to resolve a PR's
+// base branch. Tests override it to stub gh; production shells out to it when
+// available and degrades gracefully when not.
+var newForge = func() probe.Forge { return forge.New() }
 
 // out/errOut are the single funnel for process output: stdout = payload,
 // stderr = diagnostics. No other file writes to os.Stdout/os.Stderr directly.
@@ -91,9 +100,12 @@ func newRootCmd() *cobra.Command {
 			"  mergeprobe                                # HEAD onto origin/HEAD (does my branch land?)\n" +
 			"  mergeprobe feature-x                      # feature-x onto origin/HEAD\n" +
 			"  mergeprobe feature-x --onto origin/main   # any ref pair\n" +
+			"  mergeprobe 123                            # origin PR #123 (fetches pull/123/head)\n" +
+			"  mergeprobe cli/cli#872                    # PR #872 in another repo\n" +
 			"  mergeprobe feature-x --path app/Kconfig   # drill into one conflicted file\n\n" +
-			"A successful probe exits 0 whether or not it merges cleanly; read .mergeable in\n" +
-			"the payload. PR-number resolution and --rebase are planned (docs/design.md).",
+			"For a PR, the base branch comes from gh when available, else origin/HEAD with a\n" +
+			"note (--onto always overrides). A successful probe exits 0 whether or not it\n" +
+			"merges cleanly; read .mergeable in the payload. --rebase is planned (docs/design.md).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Resolve().String(),
@@ -103,9 +115,14 @@ func newRootCmd() *cobra.Command {
 			if len(args) == 1 {
 				topic = args[0]
 			}
-			report, err := probe.Run(cmd.Context(), newRepo(), probe.Options{Topic: topic, Base: onto, Path: path})
+			g := newRepo()
+			opts, err := resolveOptions(cmd, g, topic, onto, path)
 			if err != nil {
-				return prettifyRefError(err, topic)
+				return err
+			}
+			report, err := probe.Run(cmd.Context(), g, opts)
+			if err != nil {
+				return err
 			}
 			// Classify a stdout write failure as internal/IO (a bare error here
 			// would otherwise fall through to the cobra->validation mapping in
@@ -123,26 +140,23 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
-// prettifyRefError turns the raw unknown-ref error for an all-digit topic into a
-// pointer at the not-yet-implemented PR-number resolution, since an agent's
-// first instinct is `mergeprobe 123`.
-func prettifyRefError(err error, topic string) error {
-	ce := core.AsError(err)
-	if ce != nil && ce.ID == "unknown-ref" && topic != "" && isAllDigits(topic) {
-		return core.Validationf("pr-number-unsupported",
-			"%q looks like a PR number, but PR-number resolution is not implemented yet; "+
-				"pass a branch/ref (e.g. mergeprobe feature-x --onto origin/main) — see docs/design.md", topic)
-	}
-	return err
-}
-
-func isAllDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
+// resolveOptions turns the CLI's topic argument into a probe request. A topic
+// that reads as a PR reference (123 / owner/repo#123) is resolved through the
+// git+forge ports — fetching the PR head, deciding the base — and any assumed-
+// base notes are written to stderr. Any other topic is a plain ref pair.
+func resolveOptions(cmd *cobra.Command, g probe.Git, topic, onto, path string) (probe.Options, error) {
+	if pr, ok := probe.ParsePRRef(topic); ok {
+		opts, notes, err := probe.ResolvePR(cmd.Context(), g, newForge(), pr, onto)
+		if err != nil {
+			return probe.Options{}, err
 		}
+		for _, n := range notes {
+			fmt.Fprintln(cmd.ErrOrStderr(), "note: "+n)
+		}
+		opts.Path = path
+		return opts, nil
 	}
-	return s != ""
+	return probe.Options{Topic: topic, Base: onto, Path: path}, nil
 }
 
 // renderError prints the structured error envelope to stderr — never stdout,

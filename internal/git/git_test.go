@@ -203,6 +203,105 @@ func TestMergeTree_UnrelatedHistories(t *testing.T) {
 	}
 }
 
+// upstreamWithPR builds a source repo carrying refs/pull/1/head (as GitHub
+// exposes a PR head) and returns its path plus the PR-head OID.
+func upstreamWithPR(t *testing.T) (dir, prOID string) {
+	t.Helper()
+	dir = gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "base\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "pr")
+	gittest.Write(t, dir, "a.txt", "pr change\n")
+	gittest.Run(t, dir, "commit", "-qam", "pr")
+	prOID = gittest.Run(t, dir, "rev-parse", "HEAD")
+	gittest.Run(t, dir, "update-ref", "refs/pull/1/head", prOID)
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	return dir, prOID
+}
+
+// Fetch pulls a ref from a source into FETCH_HEAD and returns its OID, so PR
+// resolution can pin a fetched PR head / base without adding tracking refs.
+func TestFetch(t *testing.T) {
+	up, prOID := upstreamWithPR(t)
+	cons := gittest.Init(t)
+	gittest.Run(t, cons, "remote", "add", "origin", up)
+	r := New(cons)
+
+	oid, err := r.Fetch(context.Background(), "origin", "refs/pull/1/head")
+	if err != nil {
+		t.Fatalf("Fetch pull ref: %v", err)
+	}
+	if oid != prOID {
+		t.Errorf("Fetch pull ref = %q, want %q", oid, prOID)
+	}
+	// A branch name resolves too (the base-branch fetch path).
+	mainOID := gittest.Run(t, up, "rev-parse", "main")
+	if got, err := r.Fetch(context.Background(), "origin", "main"); err != nil || got != mainOID {
+		t.Errorf("Fetch main = (%q,%v), want (%q,nil)", got, err, mainOID)
+	}
+}
+
+// A missing remote ref is a soft not-found (exit 1), not an internal error, so
+// `mergeprobe 999` for a nonexistent PR reports cleanly.
+func TestFetch_MissingRef(t *testing.T) {
+	up, _ := upstreamWithPR(t)
+	cons := gittest.Init(t)
+	gittest.Run(t, cons, "remote", "add", "origin", up)
+	r := New(cons)
+
+	_, err := r.Fetch(context.Background(), "origin", "refs/pull/999/head")
+	if ce := core.AsError(err); ce == nil || ce.Code != core.CodeNotFound {
+		t.Errorf("missing ref: want CodeNotFound, got %v", err)
+	}
+}
+
+// Flag-shaped source/ref are rejected before reaching git (argument injection),
+// mirroring ResolveCommit's guard.
+func TestFetch_DashRejected(t *testing.T) {
+	gittest.SkipIfNoGit(t)
+	r := New(t.TempDir())
+	if _, err := r.Fetch(context.Background(), "-x", "main"); core.AsError(err) == nil {
+		t.Error("dash source not rejected")
+	}
+	if _, err := r.Fetch(context.Background(), "origin", "-x"); core.AsError(err) == nil {
+		t.Error("dash ref not rejected")
+	}
+}
+
+// Remotes maps each remote name to its fetch URL, so owner/repo#N can be matched
+// to a configured remote.
+func TestRemotes(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Run(t, dir, "remote", "add", "origin", "git@github.com:akira-toriyama/mergeprobe.git")
+	gittest.Run(t, dir, "remote", "add", "upstream", "https://github.com/cli/cli.git")
+	r := New(dir)
+
+	m, err := r.Remotes(context.Background())
+	if err != nil {
+		t.Fatalf("Remotes: %v", err)
+	}
+	if m["origin"] != "git@github.com:akira-toriyama/mergeprobe.git" {
+		t.Errorf("origin = %q", m["origin"])
+	}
+	if m["upstream"] != "https://github.com/cli/cli.git" {
+		t.Errorf("upstream = %q", m["upstream"])
+	}
+}
+
+// No remotes yields an empty map, not an error.
+func TestRemotes_None(t *testing.T) {
+	dir := gittest.Init(t)
+	r := New(dir)
+	m, err := r.Remotes(context.Background())
+	if err != nil {
+		t.Fatalf("Remotes: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("want no remotes, got %v", m)
+	}
+}
+
 func TestNotARepo(t *testing.T) {
 	gittest.SkipIfNoGit(t)
 	r := New(t.TempDir()) // empty dir, no repo

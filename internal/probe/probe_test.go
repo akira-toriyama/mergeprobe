@@ -30,6 +30,8 @@ type fakeGit struct {
 	diffNames func(from, to string) ([]string, error)
 	showBlob  func(treeish, path string) ([]byte, error)
 	blobSize  func(treeish, path string) (int64, error)
+	fetch     func(source, ref string) (string, error)
+	remotes   func() (map[string]string, error)
 }
 
 func (f fakeGit) ResolveCommit(_ context.Context, ref string) (string, error) {
@@ -76,6 +78,33 @@ func (f fakeGit) BlobSize(_ context.Context, treeish, path string) (int64, error
 		return int64(len(b)), err
 	}
 	return 0, nil
+}
+
+func (f fakeGit) Fetch(_ context.Context, source, ref string) (string, error) {
+	if f.fetch != nil {
+		return f.fetch(source, ref)
+	}
+	return source + "/" + ref + "-oid", nil
+}
+func (f fakeGit) Remotes(context.Context) (map[string]string, error) {
+	if f.remotes != nil {
+		return f.remotes()
+	}
+	return nil, nil
+}
+
+// fakeForge is an in-memory Forge port. baseRef/ok/err drive the base-resolution
+// branches; the default (nil funcs) reports the forge unavailable so the fallback
+// path is exercised.
+type fakeForge struct {
+	baseRef func(owner, repo string, num int) (string, bool, error)
+}
+
+func (f fakeForge) PRBaseRef(_ context.Context, owner, repo string, num int) (string, bool, error) {
+	if f.baseRef != nil {
+		return f.baseRef(owner, repo, num)
+	}
+	return "", false, nil
 }
 
 func conflictBytes() []byte {
@@ -244,6 +273,32 @@ func TestRun_DefaultBaseResolved(t *testing.T) {
 	}
 	if r.Topic != "feature" {
 		t.Errorf("Report.Topic = %q, want feature", r.Topic)
+	}
+}
+
+// In PR mode the resolved refs are OIDs, but the report should show the
+// human-facing labels (#123 / origin/main), so Options carries display
+// overrides the report prefers over the raw refs.
+func TestRun_LabelsOverrideDisplay(t *testing.T) {
+	g := fakeGit{
+		mergeTree: func(base, topic string) ([]byte, bool, error) {
+			if base != "baseoid" || topic != "topicoid" {
+				t.Errorf("merge-tree got (%q,%q), want resolved OIDs", base, topic)
+			}
+			return z("t"), false, nil
+		},
+	}
+	r, err := Run(context.Background(), g, Options{
+		Topic: "topicoid", Base: "baseoid", TopicLabel: "#123", BaseLabel: "origin/main",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if r.Topic != "#123" {
+		t.Errorf("Report.Topic = %q, want the label #123", r.Topic)
+	}
+	if r.Base != "origin/main" {
+		t.Errorf("Report.Base = %q, want the label origin/main", r.Base)
 	}
 }
 

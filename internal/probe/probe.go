@@ -40,14 +40,41 @@ type Git interface {
 	// content, so an oversized conflicted blob is skipped before it is loaded
 	// into memory.
 	BlobSize(ctx context.Context, treeish, path string) (size int64, err error)
+	// Fetch retrieves ref from source (a remote name or URL) and returns the
+	// fetched commit OID, so a PR head/base is pinned before it is probed. A
+	// missing remote ref is a not-found error.
+	Fetch(ctx context.Context, source, ref string) (oid string, err error)
+	// Remotes maps each configured remote name to its fetch URL, used to route a
+	// owner/repo#N reference to a remote that already points at that repo.
+	Remotes(ctx context.Context) (map[string]string, error)
+}
+
+// Forge is the optional host-metadata port: the one fact merge-tree cannot
+// derive from git alone, a PR's base branch. It is satisfied by the gh adapter
+// and is deliberately allowed to be absent — PRBaseRef returns ok=false when gh
+// is unavailable, so resolution degrades to a git-only default rather than
+// failing.
+type Forge interface {
+	// PRBaseRef returns the base branch name (e.g. "main") of PR num in a repo.
+	// owner/repo are empty for an origin PR (the adapter uses the ambient repo).
+	// ok=false means the forge could not answer (gh missing, unauthenticated, or
+	// errored); the returned err, when non-nil, explains why for a diagnostic
+	// note but is not itself fatal. It takes primitives, not PR, so the adapter
+	// stays free of any probe-package dependency.
+	PRBaseRef(ctx context.Context, owner, repo string, num int) (baseRef string, ok bool, err error)
 }
 
 // Options is a resolved probe request. Empty Topic means HEAD; empty Base means
 // "resolve the default". A non-empty Path switches to single-file drill-down.
+// TopicLabel/BaseLabel override what the report displays for the two refs: PR
+// resolution sets Topic/Base to concrete OIDs but wants the report to read
+// "#123" / "origin/main", so those labels win over the raw ref when set.
 type Options struct {
-	Topic string
-	Base  string
-	Path  string
+	Topic      string
+	Base       string
+	Path       string
+	TopicLabel string
+	BaseLabel  string
 }
 
 const (
@@ -108,8 +135,8 @@ func Run(ctx context.Context, g Git, opts Options) (core.Report, error) {
 	}
 
 	report := core.Report{
-		Base:      base,
-		Topic:     topic,
+		Base:      orLabel(opts.BaseLabel, base),
+		Topic:     orLabel(opts.TopicLabel, topic),
 		Mergeable: !conflicted && parsed.Clean(),
 	}
 
@@ -232,6 +259,14 @@ func validateRef(field, ref string) error {
 		return core.Validationf("dash-ref", "%s %q must not start with '-'", field, ref)
 	}
 	return nil
+}
+
+// orLabel prefers a non-empty display label over the raw ref it stands in for.
+func orLabel(label, ref string) string {
+	if label != "" {
+		return label
+	}
+	return ref
 }
 
 func shorten(oid string) string {

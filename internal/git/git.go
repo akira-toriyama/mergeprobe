@@ -138,6 +138,95 @@ func (r *Repo) MergeTree(ctx context.Context, base, topic string) ([]byte, bool,
 	}
 }
 
+// Fetch retrieves ref (a pull ref like refs/pull/N/head, or a branch name) from
+// source (a remote name or URL) into FETCH_HEAD and returns the fetched commit
+// OID. Pinning the OID lets a later merge-tree run against a stable object
+// rather than a ref another fetch could move. --no-tags keeps the footprint to
+// FETCH_HEAD plus the fetched objects — no remote-tracking ref is written — and,
+// like the merge-tree write, this touches .git/objects but never the index,
+// HEAD, or the worktree.
+func (r *Repo) Fetch(ctx context.Context, source, ref string) (string, error) {
+	if err := rejectDash("fetch source", source); err != nil {
+		return "", err
+	}
+	if err := rejectDash("fetch ref", ref); err != nil {
+		return "", err
+	}
+	_, errb, code, err := r.run(ctx, "fetch", "--quiet", "--no-tags", source, ref)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fetchError(errb, code)
+	}
+	out, errb, code, err := r.run(ctx, "rev-parse", "--verify", "--quiet", "FETCH_HEAD")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", gitError("rev-parse", errb, code)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Remotes maps each configured remote name to its fetch URL, so a owner/repo#N
+// reference can be matched to a remote that already points at that repository.
+func (r *Repo) Remotes(ctx context.Context) (map[string]string, error) {
+	out, errb, code, err := r.run(ctx, "remote", "-v")
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, gitError("remote", errb, code)
+	}
+	return parseRemotes(out), nil
+}
+
+// parseRemotes decodes `git remote -v` fetch lines ("<name>\t<url> (fetch)")
+// into a name→URL map.
+func parseRemotes(out []byte) map[string]string {
+	m := map[string]string{}
+	for _, ln := range strings.Split(string(out), "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasSuffix(ln, "(fetch)") {
+			continue
+		}
+		tab := strings.IndexByte(ln, '\t')
+		if tab < 0 {
+			continue
+		}
+		name := ln[:tab]
+		url := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(ln[tab+1:]), "(fetch)"))
+		if name != "" && url != "" {
+			m[name] = url
+		}
+	}
+	return m
+}
+
+// rejectDash refuses a leading-dash value that git could parse as an option
+// (argument injection), the same guard probe.validateRef applies to refs.
+func rejectDash(field, v string) error {
+	if v == "" {
+		return core.Validationf("empty-arg", "%s must not be empty", field)
+	}
+	if v[0] == '-' {
+		return core.Validationf("dash-arg", "%s %q must not start with '-'", field, v)
+	}
+	return nil
+}
+
+// fetchError classifies a `git fetch` failure: a missing remote ref is a soft
+// not-found (so `mergeprobe 999` reports cleanly), anything else defers to the
+// shared classifier.
+func fetchError(stderr []byte, code int) error {
+	msg := distill(stderr)
+	if strings.Contains(msg, "couldn't find remote ref") || strings.Contains(msg, "not our ref") {
+		return core.NotFoundf("fetch-no-ref", "remote ref not found: %s", msg)
+	}
+	return gitError("fetch", stderr, code)
+}
+
 // MergeBase returns the common ancestor, ok=false when the refs are unrelated.
 func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, bool, error) {
 	out, errb, code, err := r.run(ctx, "merge-base", "--end-of-options", a, b)

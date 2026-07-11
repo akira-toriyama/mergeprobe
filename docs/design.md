@@ -51,10 +51,10 @@ Verified working against git 2.50.
 Shipped: the ref-pair core. `mergeprobe [<topic>] [--onto <base>]` (topic
 defaults to `HEAD`, base to `origin/HEAD`), the `-z` merge-tree parse, resolution
 classes, `binary`, bounded `sample`, `--path` drill-down, `clean_merges`, and
-`both_touched_clean`. Deferred to their own tasks: **PR-number resolution**
-(`mergeprobe 123` → fetch `pull/N/head`) and **`--rebase`** per-commit simulation
-(the design's thick differentiator). The ref-pair core is the load-bearing
-foundation both build on.
+`both_touched_clean`. **PR-number resolution** (`mergeprobe 123` → fetch
+`pull/N/head`) now ships too (notes below); **`--rebase`** per-commit simulation
+(the design's thick differentiator) remains deferred to its own task. The
+ref-pair core is the load-bearing foundation both build on.
 
 Premises verified against git 2.53, with two corrections to this design:
 
@@ -107,3 +107,47 @@ git 2.53 before fixing):
 7. **A stdout write failure is IO (exit 3), not usage (exit 2).** `RunE` wraps the
    write error as a `*core.Error{CodeInternal}` so the cobra→validation fallback
    in `Execute` applies only to genuine flag/arg parse errors.
+
+## Implementation notes (PR-number resolution)
+
+Shipped: `mergeprobe 123` and `mergeprobe owner/repo#123` resolve a GitHub PR to
+the same ref-pair probe. `probe.ParsePRRef` recognizes a bare (optionally
+`#`-prefixed) number as an origin PR and `owner/repo#N` as a foreign one;
+`probe.ResolvePR` orchestrates the resolution over the ports and hands ordinary
+`Options` to `Run`, so the merge/verdict path is entirely unchanged.
+
+1. **The head is fetched and pinned to an OID, never left on a moving ref.**
+   `git fetch --no-tags <source> refs/pull/N/head` writes only objects and
+   FETCH_HEAD (no tracking ref), which `Fetch` immediately resolves to a commit
+   OID. This keeps the "worktree untouched" promise — the fetch is the same kind
+   of object-only write `merge-tree` already does — and makes the probe
+   race-free against a concurrent fetch.
+
+2. **The base branch is the one fact git cannot supply, so it degrades.** A PR's
+   base lives in GitHub metadata, not in `refs/pull/N/head`. Resolution order:
+   an explicit `--onto` wins; else the **`Forge` port** (a `gh pr view --json
+   baseRefName` adapter) answers; else an *origin* PR falls back to
+   `origin/HEAD` with a `note:` on stderr. A non-origin PR with no `gh` errors
+   (validation) rather than probe against a guessed base. `gh` is optional by
+   design: the `forge.GH` adapter reports *unavailable* (ok=false, no error)
+   when `gh` is absent, and a *reason* when `gh` ran but failed — the difference
+   between "expected" and "worth mentioning".
+
+3. **`owner/repo#N` routes to a matching remote, else the HTTPS URL.**
+   `prSource` scans `git remote -v` for a remote whose fetch URL parses
+   (`parseGitHubRepo`, any scp/https/ssh spelling) to the same owner/repo
+   (case-insensitively), and fetches from that remote name; with no match it
+   fetches straight from `https://github.com/owner/repo.git`. No remote is
+   added, so the caller's config is untouched.
+
+4. **The report shows what the user named, not OIDs.** Because the resolved
+   `base`/`topic` are commit OIDs, `Options` carries `TopicLabel`/`BaseLabel`
+   (`#123` / `owner/repo#123` / the base branch) that `Run` prefers for the
+   `base`/`topic` fields — the JSON reads the way the invocation did.
+
+5. **Layering holds.** The new work is a pure parser (`ParsePRRef`,
+   `parseGitHubRepo`, fake-free unit tests) + orchestration (`ResolvePR` over
+   the `Git`+`Forge` ports, fake-tested) + two adapters (`git.Fetch`/`Remotes`
+   real-git tested; `forge.GH` driven against a fake `gh` script). `cli` wires a
+   PR-shaped topic through `ResolvePR`, else the plain ref pair — the sole
+   branch point.
