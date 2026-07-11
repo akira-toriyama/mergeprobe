@@ -102,10 +102,17 @@ func renderError(e *core.Error) {
 	if e.Details != nil {
 		env["details"] = e.Details
 	}
-	b, err := json.Marshal(map[string]any{"error": env})
-	if err != nil {
+	if err := writeJSON(errOut, map[string]any{"error": env}); err != nil {
 		fmt.Fprintln(errOut, e.Msg)
-		return
 	}
-	fmt.Fprintln(errOut, string(b))
+}
+
+// writeJSON is the single JSON funnel for every payload and envelope: HTML
+// escaping is off so <, >, & survive verbatim (messages echo diff/path/code
+// content) and the emitted bytes match the on-disk encoding. Encode appends a
+// trailing newline.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
 }
