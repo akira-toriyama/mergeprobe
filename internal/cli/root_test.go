@@ -296,6 +296,44 @@ func TestEndToEnd_TooManyArgs(t *testing.T) {
 	}
 }
 
+// A file carrying a non-default conflict-marker-size gitattribute makes
+// merge-tree emit shorter markers (e.g. <<<< instead of <<<<<<<); mergeprobe
+// must still find the hunks and sample, not silently report hunks:0. The size
+// is read from the merged tree via check-attr, matching what merge-tree used.
+func TestEndToEnd_SmallConflictMarkerSize(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, ".gitattributes", "f.txt conflict-marker-size=4\n")
+	gittest.Write(t, dir, "f.txt", "a\nb\nc\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "ours")
+	gittest.Write(t, dir, "f.txt", "OURS\nb\nc\n")
+	gittest.Run(t, dir, "commit", "-qam", "ours")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Run(t, dir, "checkout", "-qb", "theirs")
+	gittest.Write(t, dir, "f.txt", "THEIRS\nb\nc\n")
+	gittest.Run(t, dir, "commit", "-qam", "theirs")
+
+	stdout, stderr, code := runCLI(t, dir, "theirs", "--onto", "ours")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.Report
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout)
+	}
+	if len(r.Conflicts) != 1 {
+		t.Fatalf("want one conflict, got %+v", r.Conflicts)
+	}
+	c := r.Conflicts[0]
+	if c.Hunks != 1 {
+		t.Errorf("hunks = %d, want 1 (marker-size-4 conflict must not read as 0)", c.Hunks)
+	}
+	if !strings.Contains(c.Sample, "<<<<") || !strings.Contains(c.Sample, ">>>>") {
+		t.Errorf("sample lacks the size-4 markers: %q", c.Sample)
+	}
+}
+
 type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }

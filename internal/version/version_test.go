@@ -11,6 +11,21 @@ func TestResolveDefaultsToDev(t *testing.T) {
 	}
 }
 
+// The release contract: when the linker injects Version/Commit/Date, Resolve
+// returns them verbatim and does NOT let the runtime VCS stamp clobber the
+// shipped identity. Pins the early-return that guards this.
+func TestResolveInjectedIdentityWins(t *testing.T) {
+	oldV, oldC, oldD := Version, Commit, Date
+	t.Cleanup(func() { Version, Commit, Date = oldV, oldC, oldD })
+	Version, Commit, Date = "v9.9.9", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "2030-01-02T03:04:05Z"
+
+	got := Resolve()
+	want := Info{Version: "v9.9.9", Commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Date: "2030-01-02T03:04:05Z"}
+	if got != want {
+		t.Errorf("Resolve() = %+v, want the injected identity %+v (VCS stamp must not clobber it)", got, want)
+	}
+}
+
 // String must render each identity shape: bare tag, +short commit (7-char
 // truncation), +date, and +modified, plus the early return when no commit is set.
 func TestInfoString(t *testing.T) {

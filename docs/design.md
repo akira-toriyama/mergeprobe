@@ -107,6 +107,15 @@ git 2.53 before fixing):
 7. **A stdout write failure is IO (exit 3), not usage (exit 2).** `RunE` wraps the
    write error as a `*core.Error{CodeInternal}` so the cobra→validation fallback
    in `Execute` applies only to genuine flag/arg parse errors.
+8. **The conflict-marker size is not hard-coded 7.** A file can lower its
+   `conflict-marker-size` gitattribute, and merge-tree obeys it (a size-4 file
+   gets `<<<<`/`====`/`>>>>`), so a fixed 7-char matcher silently reported
+   `hunks:0` with no sample for a real text conflict. `ConflictHunks` now takes
+   the size; `buildConflict` reads the effective value from the *merged tree*
+   (`check-attr --source=<tree>`, matching what merge-tree used) and retries —
+   but only when the default-7 pass found nothing, so the common case pays no
+   extra I/O. (Found by the second-round review; verdict/class were always
+   correct since they derive from stages, so this was a degraded sample.)
 
 ## Implementation notes (PR-number resolution)
 

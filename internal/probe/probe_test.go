@@ -23,15 +23,16 @@ func z(fields ...string) []byte {
 // fakeGit is an in-memory Git port. Each behavior is a function field so a test
 // overrides only what it exercises; unset methods fail loudly.
 type fakeGit struct {
-	resolve   func(ref string) (string, error)
-	defBase   func() (string, error)
-	mergeTree func(base, topic string) ([]byte, bool, error)
-	mergeBase func(a, b string) (string, bool, error)
-	diffNames func(from, to string) ([]string, error)
-	showBlob  func(treeish, path string) ([]byte, error)
-	blobSize  func(treeish, path string) (int64, error)
-	fetch     func(source, ref string) (string, error)
-	remotes   func() (map[string]string, error)
+	resolve    func(ref string) (string, error)
+	defBase    func() (string, error)
+	mergeTree  func(base, topic string) ([]byte, bool, error)
+	mergeBase  func(a, b string) (string, bool, error)
+	diffNames  func(from, to string) ([]string, error)
+	showBlob   func(treeish, path string) ([]byte, error)
+	blobSize   func(treeish, path string) (int64, error)
+	fetch      func(source, ref string) (string, error)
+	remotes    func() (map[string]string, error)
+	markerSize func(tree, path string) (int, error)
 }
 
 func (f fakeGit) ResolveCommit(_ context.Context, ref string) (string, error) {
@@ -91,6 +92,12 @@ func (f fakeGit) Remotes(context.Context) (map[string]string, error) {
 		return f.remotes()
 	}
 	return nil, nil
+}
+func (f fakeGit) ConflictMarkerSize(_ context.Context, tree, path string) (int, error) {
+	if f.markerSize != nil {
+		return f.markerSize(tree, path)
+	}
+	return core.DefaultMarkerSize, nil
 }
 
 // fakeForge is an in-memory Forge port. baseRef/ok/err drive the base-resolution
@@ -461,6 +468,131 @@ func TestRun_DashRefRejected(t *testing.T) {
 	g2 := fakeGit{mergeTree: func(base, topic string) ([]byte, bool, error) { return z("t"), false, nil }}
 	if _, err := Run(context.Background(), g2, Options{Topic: "feature", Base: "-x"}); core.AsError(err) == nil {
 		t.Errorf("dash --onto not rejected")
+	}
+}
+
+// A conflicted blob mergeprobe cannot read (a modify/delete leaves no content;
+// BlobSize errors or reports 0) must degrade to no sample, NOT fail the probe —
+// the documented resilience contract. This pins it so a refactor that propagated
+// the error instead of swallowing it would be caught.
+func TestRun_UnreadableBlobDegrades(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size func(treeish, path string) (int64, error)
+	}{
+		{"size-zero", func(string, string) (int64, error) { return 0, nil }},
+		{"size-error", func(string, string) (int64, error) { return 0, core.Internalf("cat-file", "gone") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := fakeGit{
+				mergeTree: func(base, topic string) ([]byte, bool, error) { return conflictBytes(), true, nil },
+				blobSize:  tc.size,
+				showBlob: func(string, string) ([]byte, error) {
+					t.Fatal("ShowBlob must not run once BlobSize signals no content")
+					return nil, nil
+				},
+			}
+			r, err := Run(context.Background(), g, Options{Topic: "feature", Base: "origin/main"})
+			if err != nil {
+				t.Fatalf("an unreadable blob must not fail the probe: %v", err)
+			}
+			if len(r.Conflicts) != 1 {
+				t.Fatalf("conflict still listed: got %+v", r.Conflicts)
+			}
+			c := r.Conflicts[0]
+			if c.Sample != "" || c.Hunks != 0 || c.Truncated {
+				t.Errorf("degraded conflict should be sample-less: %+v", c)
+			}
+			if c.Path != "f.txt" || c.Class != core.ClassBothModified {
+				t.Errorf("path/class still reported from stages: %+v", c)
+			}
+		})
+	}
+}
+
+// One unreadable blob must not lose the OTHER conflicts' data: a ShowBlob error
+// for one path degrades only that path while the rest of the report stands.
+func TestRun_OneUnreadableBlobDoesNotAbortReport(t *testing.T) {
+	two := z(
+		"tree",
+		"100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\ta.txt",
+		"100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\ta.txt",
+		"100644 cccccccccccccccccccccccccccccccccccccccc 3\ta.txt",
+		"100644 dddddddddddddddddddddddddddddddddddddddd 1\tb.txt",
+		"100644 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2\tb.txt",
+		"100644 ffffffffffffffffffffffffffffffffffffffff 3\tb.txt",
+		"", "1", "a.txt", "CONFLICT (contents)", "CONFLICT (content): a.txt\n",
+		"1", "b.txt", "CONFLICT (contents)", "CONFLICT (content): b.txt\n",
+	)
+	g := fakeGit{
+		mergeTree: func(base, topic string) ([]byte, bool, error) { return two, true, nil },
+		showBlob: func(treeish, path string) ([]byte, error) {
+			if path == "a.txt" {
+				return nil, core.Internalf("cat-file", "boom")
+			}
+			return []byte("<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n"), nil
+		},
+	}
+	r, err := Run(context.Background(), g, Options{Topic: "feature", Base: "origin/main"})
+	if err != nil {
+		t.Fatalf("one bad blob aborted the whole report: %v", err)
+	}
+	byPath := map[string]core.Conflict{}
+	for _, c := range r.Conflicts {
+		byPath[c.Path] = c
+	}
+	if c := byPath["a.txt"]; c.Sample != "" || c.Hunks != 0 {
+		t.Errorf("a.txt should degrade to no sample: %+v", c)
+	}
+	if c := byPath["b.txt"]; c.Hunks != 1 || !strings.Contains(c.Sample, "<<<<<<<") {
+		t.Errorf("b.txt must still be fully reported: %+v", c)
+	}
+}
+
+// Every hard failure from the Git port must abort the probe and surface as the
+// returned error, never a fabricated verdict. Each seam is exercised by making
+// one fake method fail. MergeBase is the sharpest: a dropped error there would
+// silently fall back to the empty tree and emit a plausible-but-wrong verdict.
+func TestRun_GitPortErrorsPropagate(t *testing.T) {
+	boom := core.Internalf("git", "boom")
+	base := func() fakeGit {
+		return fakeGit{
+			mergeTree: func(b, tp string) ([]byte, bool, error) { return z("t"), false, nil },
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*fakeGit)
+	}{
+		{"default-base", func(g *fakeGit) { g.defBase = func() (string, error) { return "", boom } }},
+		{"resolve-base", func(g *fakeGit) {
+			g.resolve = func(ref string) (string, error) {
+				if ref == "origin/main" {
+					return "", boom
+				}
+				return ref + "-oid", nil
+			}
+		}},
+		{"merge-tree", func(g *fakeGit) { g.mergeTree = func(b, tp string) ([]byte, bool, error) { return nil, false, boom } }},
+		{"merge-base", func(g *fakeGit) { g.mergeBase = func(a, b string) (string, bool, error) { return "", false, boom } }},
+		{"diff-names", func(g *fakeGit) { g.diffNames = func(from, to string) ([]string, error) { return nil, boom } }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := base()
+			opts := Options{Topic: "feature", Base: "origin/main"}
+			if tc.name == "default-base" {
+				opts.Base = "" // force DefaultBase to be consulted
+			}
+			tc.mutate(&g)
+			r, err := Run(context.Background(), g, opts)
+			if err == nil {
+				t.Fatalf("a %s failure must abort the probe, got report %+v", tc.name, r)
+			}
+			if ce := core.AsError(err); ce == nil || ce.Code != core.CodeInternal {
+				t.Errorf("want the propagated internal error, got %v", err)
+			}
+		})
 	}
 }
 

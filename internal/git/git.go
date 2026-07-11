@@ -285,6 +285,32 @@ func (r *Repo) BlobSize(ctx context.Context, treeish, path string) (int64, error
 	return n, nil
 }
 
+// ConflictMarkerSize returns the effective conflict-marker-size for path in
+// tree — the number of marker characters merge-tree wrote for it. It reads the
+// attribute from the given tree (--source), so it matches exactly what
+// merge-tree saw, and returns core.DefaultMarkerSize when the attribute is unset
+// or unspecified.
+func (r *Repo) ConflictMarkerSize(ctx context.Context, tree, path string) (int, error) {
+	out, errb, code, err := r.run(ctx, "check-attr", "--source", tree, "conflict-marker-size", "--", path)
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, gitError("check-attr", errb, code)
+	}
+	// Output: "<path>: conflict-marker-size: <value>". value is "unspecified"
+	// (attribute absent), "unset"/"set", or a number; only a number overrides.
+	value := ""
+	if i := strings.LastIndex(string(out), ": "); i >= 0 {
+		value = strings.TrimSpace(string(out)[i+2:])
+	}
+	n, perr := strconv.Atoi(value)
+	if perr != nil || n < 1 {
+		return core.DefaultMarkerSize, nil
+	}
+	return n, nil
+}
+
 // splitNUL splits NUL-delimited output into fields, dropping the trailing empty
 // element git leaves after the final terminator.
 func splitNUL(b []byte) []string {

@@ -45,7 +45,7 @@ func TestMergeTree_Conflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShowBlob f.txt: %v", err)
 	}
-	if _, n := core.ConflictHunks(blob); n != 1 {
+	if _, n := core.ConflictHunks(blob, core.DefaultMarkerSize); n != 1 {
 		t.Errorf("f.txt hunks = %d, want 1", n)
 	}
 }
@@ -299,6 +299,28 @@ func TestRemotes_None(t *testing.T) {
 	}
 	if len(m) != 0 {
 		t.Errorf("want no remotes, got %v", m)
+	}
+}
+
+// ConflictMarkerSize reads the effective conflict-marker-size for a path from a
+// tree's .gitattributes (matching what merge-tree used), defaulting to 7 when
+// the attribute is unset.
+func TestConflictMarkerSize(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, ".gitattributes", "small.txt conflict-marker-size=4\n")
+	gittest.Write(t, dir, "small.txt", "x\n")
+	gittest.Write(t, dir, "normal.txt", "y\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	tree := gittest.Run(t, dir, "rev-parse", "HEAD^{tree}")
+	r := New(dir)
+
+	if got, err := r.ConflictMarkerSize(context.Background(), tree, "small.txt"); err != nil || got != 4 {
+		t.Errorf("small.txt size = (%d,%v), want 4", got, err)
+	}
+	// Unset attribute defaults to 7.
+	if got, err := r.ConflictMarkerSize(context.Background(), tree, "normal.txt"); err != nil || got != 7 {
+		t.Errorf("normal.txt size = (%d,%v), want default 7", got, err)
 	}
 }
 
