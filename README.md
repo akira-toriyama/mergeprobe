@@ -4,11 +4,11 @@ Probe what a branch conflicts with — **without touching the worktree**. Wraps
 git 2.38+'s `merge-tree --write-tree` (in-memory merge) and renders the plumbing
 output as bounded JSON an AI coding agent can consume in one turn.
 
-> **Status: v0.1 — the static merge probe works.** Any ref pair, resolution
-> classes, bounded samples, `--path` drill-down, and the `both_touched_clean`
-> blind-spot list all ship. PR-number resolution (`mergeprobe 123`) and
-> `--rebase` per-commit simulation are the next milestones — see
-> [docs/design.md](docs/design.md).
+> **Status: the static merge probe and PR-number resolution work.** Any ref
+> pair, resolution classes, bounded samples, `--path` drill-down, the
+> `both_touched_clean` blind-spot list, and `mergeprobe 123` / `owner/repo#123`
+> PR resolution all ship. `--rebase` per-commit simulation is the next
+> milestone — see [docs/design.md](docs/design.md).
 
 ## The pain this kills
 
@@ -30,6 +30,8 @@ into `.git/objects` but never touches the index, `HEAD`, or the worktree.
 $ mergeprobe                                # HEAD onto origin/HEAD — "does my branch land?"
 $ mergeprobe feature-x                      # feature-x onto origin/HEAD
 $ mergeprobe feature-x --onto origin/main   # any ref pair
+$ mergeprobe 123                            # origin PR #123 — "does it still land?"
+$ mergeprobe cli/cli#872                    # a PR in another repo
 $ mergeprobe feature-x --path app/Kconfig   # drill into one conflicted file
 ```
 
@@ -71,6 +73,29 @@ $ mergeprobe theirs --onto ours
 Use `--path <file>` to get that one file's full conflict regions in a second
 turn.
 
+## Probing a pull request
+
+`mergeprobe 123` resolves an origin PR, and `mergeprobe owner/repo#123` a PR in
+another repository. Either way mergeprobe fetches `refs/pull/<n>/head` (pinning
+it to a commit, so no branch or tracking ref moves) and probes it against the
+PR's base — the same in-memory merge, just with the refs resolved for you.
+
+The base branch is the one fact git alone cannot supply, so resolution degrades
+gracefully:
+
+1. an explicit `--onto <ref>` always wins;
+2. otherwise [`gh`](https://cli.github.com) supplies the PR's real base branch
+   when it is installed and authenticated;
+3. otherwise an origin PR falls back to `origin/HEAD`, and a `note:` on **stderr**
+   says so — stdout stays pure JSON, so the note never reaches `jq`.
+
+`gh` is optional: with it, the base is exact; without it, `mergeprobe 123` still
+works against `origin/HEAD` (pass `--onto` to be sure). For `owner/repo#123`,
+mergeprobe fetches from whichever remote already points at that repo, or from
+`https://github.com/owner/repo.git` when none does. The `base`/`topic` fields
+echo the PR (`#123`, `owner/repo#123`) and base branch you named, not the raw
+OIDs they resolved to.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -93,6 +118,8 @@ go install github.com/akira-toriyama/mergeprobe/cmd/mergeprobe@latest
 ```
 
 Requires git 2.38+ (`merge-tree --write-tree`) and a clone to run inside.
+[`gh`](https://cli.github.com) is optional — it sharpens PR base-branch
+resolution but mergeprobe runs without it.
 
 ## License
 

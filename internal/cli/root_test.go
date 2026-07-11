@@ -151,16 +151,139 @@ func TestEndToEnd_DrillDownUnknownPath(t *testing.T) {
 	}
 }
 
-// An agent's reflex is `mergeprobe 123`; the all-digit topic gets a clear
-// pointer at the pending PR-number feature, exit 2, not a raw "unknown ref".
-func TestEndToEnd_PRNumberHint(t *testing.T) {
-	dir := gittest.ConflictRepo(t)
-	_, stderr, code := runCLI(t, dir, "123")
-	if code != int(core.CodeValidation) {
-		t.Fatalf("exit = %d, want 2", code)
+// stubForge is a fixed Forge for the CLI e2e tests, so PR resolution never
+// shells out to a real gh.
+type stubForge struct {
+	base string
+	ok   bool
+	err  error
+}
+
+func (s stubForge) PRBaseRef(context.Context, string, string, int) (string, bool, error) {
+	return s.base, s.ok, s.err
+}
+
+// withForge installs a stub Forge for one test and restores the default after.
+func withForge(t *testing.T, f probe.Forge) {
+	t.Helper()
+	old := newForge
+	newForge = func() probe.Forge { return f }
+	t.Cleanup(func() { newForge = old })
+}
+
+// upstreamPRConflict builds a source repo whose refs/pull/1/head (branch
+// "feature") conflicts with its advanced "main" on shared.txt — the shape a
+// real "does PR #1 still land?" probe faces.
+func upstreamPRConflict(t *testing.T) string {
+	t.Helper()
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "shared.txt", "v1\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "feature")
+	gittest.Write(t, dir, "shared.txt", "feature\n")
+	gittest.Run(t, dir, "commit", "-qam", "feature change")
+	gittest.Run(t, dir, "update-ref", "refs/pull/1/head", gittest.Run(t, dir, "rev-parse", "HEAD"))
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Write(t, dir, "shared.txt", "mainchange\n")
+	gittest.Run(t, dir, "commit", "-qam", "main change")
+	return dir
+}
+
+// mergeprobe 1 resolves the PR head and (via gh) its base branch, then probes —
+// reporting the conflict without any note, and labelling the refs #1 / main.
+func TestEndToEnd_PRResolve_ForgeBase(t *testing.T) {
+	up := upstreamPRConflict(t)
+	cons := gittest.Init(t)
+	gittest.Run(t, cons, "remote", "add", "origin", up)
+	withForge(t, stubForge{base: "main", ok: true})
+
+	stdout, stderr, code := runCLI(t, cons, "1")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "PR number") {
-		t.Errorf("stderr should mention PR-number resolution: %q", stderr)
+	var r core.Report
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout)
+	}
+	if r.Topic != "#1" || r.Base != "main" {
+		t.Errorf("labels: topic=%q base=%q, want #1 / main", r.Topic, r.Base)
+	}
+	if r.Mergeable {
+		t.Errorf("PR #1 conflicts with main; should not be mergeable")
+	}
+	if len(r.Conflicts) != 1 || r.Conflicts[0].Path != "shared.txt" {
+		t.Errorf("want a shared.txt conflict, got %+v", r.Conflicts)
+	}
+	if strings.Contains(stderr, "note:") {
+		t.Errorf("gh answered the base; there should be no assumed-base note: %q", stderr)
+	}
+}
+
+// With gh unavailable, mergeprobe falls back to origin/HEAD and prints a note so
+// the assumption is visible; the probe still runs.
+func TestEndToEnd_PRResolve_FallbackNote(t *testing.T) {
+	up := upstreamPRConflict(t)
+	cons := gittest.Init(t)
+	gittest.Run(t, cons, "remote", "add", "origin", up)
+	gittest.Run(t, cons, "fetch", "-q", "origin")
+	gittest.Run(t, cons, "remote", "set-head", "origin", "main")
+	withForge(t, stubForge{ok: false}) // gh unavailable
+
+	stdout, stderr, code := runCLI(t, cons, "1")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.Report
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout)
+	}
+	if r.Base != "origin/main" {
+		t.Errorf("fallback base = %q, want origin/main", r.Base)
+	}
+	if !strings.Contains(stderr, "note:") || !strings.Contains(stderr, "assumed") {
+		t.Errorf("fallback should print an assumed-base note: %q", stderr)
+	}
+	if stdout == "" || !json.Valid([]byte(stdout)) {
+		t.Errorf("stdout must stay clean JSON despite the stderr note")
+	}
+}
+
+// A nonexistent PR is a soft not-found (exit 1) naming the PR, not a crash.
+func TestEndToEnd_PRResolve_NotFound(t *testing.T) {
+	up := upstreamPRConflict(t)
+	cons := gittest.Init(t)
+	gittest.Run(t, cons, "remote", "add", "origin", up)
+	withForge(t, stubForge{base: "main", ok: true})
+
+	stdout, stderr, code := runCLI(t, cons, "999")
+	if code != int(core.CodeNotFound) {
+		t.Fatalf("exit = %d, want 1 (not found); stderr=%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout should be empty on error: %q", stdout)
+	}
+	if !strings.Contains(stderr, "#999") {
+		t.Errorf("not-found should name the PR: %q", stderr)
+	}
+}
+
+// An ordinary unknown branch (non-digit, not a PR reference) surfaces the raw
+// unknown-ref validation error (exit 2) with no PR-number confusion.
+func TestEndToEnd_UnknownBranch(t *testing.T) {
+	dir := gittest.ConflictRepo(t)
+	stdout, stderr, code := runCLI(t, dir, "no-such-branch")
+	if code != int(core.CodeValidation) {
+		t.Fatalf("exit = %d, want 2 for an unknown branch; stderr=%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout should be empty on error: %q", stdout)
+	}
+	if !strings.Contains(stderr, "no-such-branch") {
+		t.Errorf("stderr should name the unresolved ref: %q", stderr)
+	}
+	if strings.Contains(stderr, "PR number") {
+		t.Errorf("an unknown branch must not be mistaken for a PR number: %q", stderr)
 	}
 }
 
