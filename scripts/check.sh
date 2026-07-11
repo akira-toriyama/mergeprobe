@@ -1,10 +1,45 @@
 #!/bin/sh
-# Mirror of .github/workflows/ci.yml — keep the two in lockstep so that
-# "green here == green CI".
+# check.sh — the full local verification, runnable by you or by Claude Code with
+# no TTY. Mirrors what CI enforces (build.yml → shared go-ci reusable: module
+# hygiene / build / vet / race-test / lint; plus govulncheck), so a green run
+# here means a green CI. GOTOOLCHAIN=local uses whatever toolchain is installed;
+# the go.mod floor is a supported minor and CI's go-version-file pins it.
 set -eu
+cd "$(dirname "$0")/.."
+export GOTOOLCHAIN=local
 
+echo "→ module hygiene (go mod tidy -diff + verify)"
+go mod tidy -diff
+go mod verify
+
+echo "→ go build"
 go build ./...
+
+echo "→ go vet"
 go vet ./...
+
+echo "→ go test -race"
 go test -race ./...
 
-echo "check.sh: all green"
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "→ golangci-lint"
+  golangci-lint run ./...
+else
+  echo "→ golangci-lint (skipped — not installed; CI runs it)"
+fi
+
+if command -v govulncheck >/dev/null 2>&1; then
+  echo "→ govulncheck"
+  govulncheck ./...
+else
+  echo "→ govulncheck (skipped — not installed; CI runs it)"
+fi
+
+echo "→ build binary for live checks"
+go build -o bin/mergeprobe ./cmd/mergeprobe
+BIN="$(pwd)/bin/mergeprobe"
+
+echo "→ smoke: --version / --help"
+"$BIN" --version >/dev/null
+"$BIN" --help >/dev/null
+echo "✓ all checks passed"
