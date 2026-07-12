@@ -1,0 +1,78 @@
+name: release
+
+# Tag-driven release: pushing a vX.Y.Z tag runs git-cliff + GoReleaser (binaries,
+# checksums, Homebrew cask, build-provenance attestation). Deliberately NOT on
+# every main push — that would run GoReleaser with no tag and fail. Use
+# workflow_dispatch for a manual run.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# Least privilege: read at the top, elevated only on the release job.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # publish the GitHub Release + upload artifacts
+      id-token: write # mint the OIDC token that signs the build-provenance attestation
+      attestations: write # publish the provenance attestation to the repo
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      # go-version-file: go.mod keeps the release build on the same floor as CI;
+      # the go.mod floor is a supported minor, so setup-go installs its latest
+      # patch. GOTOOLCHAIN=local (no toolchain line in go.mod) avoids a mid-run
+      # toolchain download.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: generate release notes (git-cliff)
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          # Write OUTSIDE the work tree: a CHANGELOG.md in the repo root leaves an
+          # untracked file, and GoReleaser's git-state check then aborts with
+          # "git is in a dirty state". runner.temp is off-tree.
+          OUTPUT: ${{ runner.temp }}/CHANGELOG.md
+
+      # Skip the Homebrew cask push when the tap token is not configured, so a
+      # release still succeeds (binaries + checksums + attestation) and the cask
+      # can be published out of band. With the token set, the cask is pushed too.
+      - id: args
+        env:
+          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          base="release --clean --release-notes ${{ runner.temp }}/CHANGELOG.md"
+          if [ -z "$TAP" ]; then base="$base --skip=homebrew"; fi
+          echo "value=$base" >> "$GITHUB_OUTPUT"
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2' # pin the v2 series (never 'latest') so a major bump can't silently change the build
+          args: ${{ steps.args.outputs.value }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained PAT with Contents:R/W on akira-toriyama/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Build provenance: a free, keyless GitHub attestation binding each release
+      # artifact's digest to THIS workflow run.
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
