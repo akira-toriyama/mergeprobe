@@ -138,7 +138,7 @@ with PR resolution (`mergeprobe 123 --rebase`) but not with `--path`.
 
 | Code | Meaning |
 |---|---|
-| `0` | probe ran — **read `.mergeable`** for the verdict (a conflict is not an error) |
+| `0` | probe ran — **read `.mergeable`** (or `.rebaseable` with `--rebase`) for the verdict (a conflict is not an error) |
 | `1` | not found / empty result (e.g. `--path` on a non-conflicted file) |
 | `2` | bad usage / validation — fix the args, do not retry |
 | `3+` | internal / IO error |
