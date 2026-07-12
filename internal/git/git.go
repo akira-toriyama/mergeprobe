@@ -248,7 +248,7 @@ func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.
 
 // parseCommitLog decodes CommitsToReplay's "%H %P\x1f%s" lines. The first parent
 // is the second space-separated token before the \x1f; a root commit (no parent)
-// leaves Parent empty.
+// leaves Parent empty, and a second parent marks a merge commit.
 func parseCommitLog(out []byte) []core.Commit {
 	var commits []core.Commit
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
@@ -260,7 +260,7 @@ func parseCommitLog(out []byte) []core.Commit {
 		if len(fields) == 0 {
 			continue
 		}
-		c := core.Commit{OID: fields[0], Subject: subject}
+		c := core.Commit{OID: fields[0], Subject: subject, Merge: len(fields) > 2}
 		if len(fields) > 1 {
 			c.Parent = fields[1] // first parent = the rebase step's merge base
 		}

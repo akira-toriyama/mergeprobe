@@ -129,7 +129,11 @@ func newRootCmd() *cobra.Command {
 			}
 			var result any
 			if rebase {
-				result, err = probe.RunRebase(cmd.Context(), g, opts)
+				var notes []string
+				result, notes, err = probe.RunRebase(cmd.Context(), g, opts)
+				for _, n := range notes {
+					fmt.Fprintln(cmd.ErrOrStderr(), "note: "+n)
+				}
 			} else {
 				result, err = probe.Run(cmd.Context(), g, opts)
 			}

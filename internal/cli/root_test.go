@@ -406,6 +406,60 @@ func TestEndToEnd_RebaseClean(t *testing.T) {
 	}
 }
 
+// A topic containing a merge commit replays by first-parent approximation, and
+// the CLI says so with a stderr note. This test also pins the divergence the
+// note warns about: the merge commit carries an "evil" edit (a change belonging
+// to neither parent) that collides with the advanced main, so the simulation
+// stops on the merge commit — while a real git rebase drops merges (and the
+// evil edit with them) and completes cleanly.
+func TestEndToEnd_RebaseMergeCommitNoteAndDivergence(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "a\n")
+	gittest.Write(t, dir, "c.txt", "c1\nc2\nc3\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "side")
+	gittest.Write(t, dir, "b.txt", "b\n")
+	gittest.Run(t, dir, "add", "b.txt")
+	gittest.Run(t, dir, "commit", "-qm", "s1 add b")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Run(t, dir, "checkout", "-qb", "topic")
+	gittest.Write(t, dir, "a.txt", "topic-a\n")
+	gittest.Run(t, dir, "commit", "-qam", "t1 modify a")
+	gittest.Run(t, dir, "merge", "--no-commit", "--no-ff", "side")
+	gittest.Write(t, dir, "c.txt", "c1\nEVIL\nc3\n") // rides only in the merge commit
+	gittest.Run(t, dir, "add", "c.txt")
+	gittest.Run(t, dir, "commit", "-qm", "merge side (evil)")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Write(t, dir, "c.txt", "c1\nMAIN\nc3\n")
+	gittest.Run(t, dir, "commit", "-qam", "main modifies c")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "note:") || !strings.Contains(stderr, "merge commit") {
+		t.Errorf("stderr should carry the merge-commit note: %q", stderr)
+	}
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if r.Rebaseable {
+		t.Error("the evil merge's delta collides with main; the simulation should conflict")
+	}
+	if r.Conflict == nil || r.Conflict.Subject != "merge side (evil)" {
+		t.Fatalf("first conflict should be the merge commit: %+v", r.Conflict)
+	}
+	if len(r.Conflict.Conflicts) != 1 || r.Conflict.Conflicts[0].Path != "c.txt" {
+		t.Errorf("conflict path should be c.txt: %+v", r.Conflict.Conflicts)
+	}
+
+	// The divergence the note warns about: a real rebase drops the merge commit
+	// (and its evil edit), so the same rebase completes cleanly.
+	gittest.Run(t, dir, "rebase", "main", "topic")
+}
+
 // --rebase and --path are mutually exclusive: reject with a usage error rather
 // than silently ignoring one.
 func TestEndToEnd_RebaseWithPathRejected(t *testing.T) {

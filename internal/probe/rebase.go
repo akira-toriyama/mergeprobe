@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
 )
@@ -17,23 +18,28 @@ import (
 // This is the design's differentiator: rebase conflicts differ from merge
 // conflicts, agents usually rebase, and simulating one by hand means running
 // merge-tree per commit — genuinely hard to compose in a single turn.
-func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, error) {
+//
+// The returned notes are human diagnostics for stderr (the ResolvePR
+// convention): today, a warning when the range contains merge commits, which
+// replay as first-parent deltas — an approximation a real rebase (which drops
+// merges) does not share.
+func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []string, error) {
 	topic, base, err := resolveTopicBase(ctx, g, opts)
 	if err != nil {
-		return core.RebaseReport{}, err
+		return core.RebaseReport{}, nil, err
 	}
 
 	commits, err := g.CommitsToReplay(ctx, base, topic)
 	if err != nil {
-		return core.RebaseReport{}, err
+		return core.RebaseReport{}, nil, err
 	}
-
 	report := core.RebaseReport{
 		Base:       orLabel(opts.BaseLabel, base),
 		Topic:      orLabel(opts.TopicLabel, topic),
 		Commits:    len(commits),
 		Rebaseable: true,
 	}
+	notes := mergeCommitNotes(report.Base, report.Topic, commits)
 
 	// running is the tree each successive commit is replayed onto: the base
 	// commit to start, then each clean step's result tree.
@@ -41,11 +47,11 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, err
 	for i, c := range commits {
 		out, conflicted, err := g.MergeTree3(ctx, c.Parent, running, c.OID)
 		if err != nil {
-			return core.RebaseReport{}, err
+			return core.RebaseReport{}, nil, err
 		}
 		parsed, err := core.ParseMergeTreeZ(out)
 		if err != nil {
-			return core.RebaseReport{}, err
+			return core.RebaseReport{}, nil, err
 		}
 		if conflicted {
 			report.Rebaseable = false
@@ -56,11 +62,33 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, err
 			}
 			report.Conflict = rc
 			report.Normalize()
-			return report, nil
+			return report, notes, nil
 		}
 		running = parsed.Tree
 	}
 	report.Applied = len(commits)
 	report.Normalize()
-	return report, nil
+	return report, notes, nil
+}
+
+// mergeCommitNotes warns when the replay range contains merge commits: each
+// replays as its first-parent delta, while a real rebase drops merges, so the
+// verdict can differ (design.md "Implementation notes (--rebase simulation)").
+// A linear topic — the common case — yields nothing.
+func mergeCommitNotes(base, topic string, commits []core.Commit) []string {
+	merges := 0
+	for _, c := range commits {
+		if c.Merge {
+			merges++
+		}
+	}
+	if merges == 0 {
+		return nil
+	}
+	plural := ""
+	if merges > 1 {
+		plural = "s"
+	}
+	return []string{fmt.Sprintf("%s..%s contains %d merge commit%s, replayed as first-parent deltas; a real rebase drops merges, so the verdict can differ",
+		base, topic, merges, plural)}
 }
