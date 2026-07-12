@@ -3,9 +3,11 @@ package core
 import "sort"
 
 // Commit is a topic commit to replay in a rebase simulation: its OID, its first
-// parent (the merge base for that replay step), and its subject for the report.
-// It lives in core so both the git adapter (which produces it) and the probe use
-// case (which consumes it) can name it without either depending on the other.
+// parent (the merge base for that replay step; the git adapter substitutes the
+// repository's empty tree for a root commit, so Parent is always a usable merge
+// base), and its subject for the report. It lives in core so both the git
+// adapter (which produces it) and the probe use case (which consumes it) can
+// name it without either depending on the other.
 type Commit struct {
 	OID     string
 	Parent  string

@@ -53,9 +53,12 @@ type Git interface {
 	// owner/repo#N reference to a remote that already points at that repo.
 	Remotes(ctx context.Context) (map[string]string, error)
 	// CommitsToReplay lists the commits a rebase of topic onto base would replay —
-	// base..topic oldest-first, each with its first parent, subject, and whether
-	// it is a merge commit (so the simulation can flag the first-parent
-	// approximation a real rebase, which drops merges, does not share).
+	// base..topic oldest-first, each with its first parent (never empty: a root
+	// commit gets the repository's empty tree), subject, and whether it is a
+	// merge commit (so the simulation can flag the first-parent approximation a
+	// real rebase, which drops merges, does not share). It errors (validation)
+	// when the range crosses a shallow-clone boundary, where hidden parents make
+	// a truthful simulation impossible.
 	CommitsToReplay(ctx context.Context, base, topic string) ([]core.Commit, error)
 	// MergeTree3 runs a 3-way merge with an explicit merge base (rebase-step /
 	// cherry-pick semantics): apply theirs's delta-from-mergeBase onto ours, where
