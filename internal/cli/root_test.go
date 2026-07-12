@@ -462,6 +462,73 @@ func TestEndToEnd_RebaseMergeCommitNoteAndDivergence(t *testing.T) {
 	gittest.Run(t, dir, "rebase", "--no-rebase-merges", "main", "topic")
 }
 
+// An unrelated-history topic (orphan branch) puts a root commit in the replay
+// range. Its replay runs against the empty tree — everything it introduces is
+// its delta — instead of dying on an empty merge base (exit 3, t-m7sc).
+// Content colliding with main surfaces as an add/add conflict at the root.
+func TestEndToEnd_RebaseOrphanTopicConflict(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "shared.txt", "main version\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-q", "--orphan", "topic")
+	gittest.Write(t, dir, "shared.txt", "orphan version\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "orphan root")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if r.Rebaseable || r.Commits != 1 || r.Applied != 0 {
+		t.Errorf("orphan collision = %+v, want !rebaseable 1/0", r)
+	}
+	if r.Conflict == nil || r.Conflict.Subject != "orphan root" {
+		t.Fatalf("conflict should be the root commit: %+v", r.Conflict)
+	}
+	if len(r.Conflict.Conflicts) != 1 || r.Conflict.Conflicts[0].Path != "shared.txt" {
+		t.Errorf("conflict path should be shared.txt: %+v", r.Conflict.Conflicts)
+	}
+	if r.Conflict.Conflicts[0].Class != core.ClassAddAdd {
+		t.Errorf("class = %q, want add-add", r.Conflict.Conflicts[0].Class)
+	}
+}
+
+// The same orphan shape with non-colliding content replays cleanly: a root
+// commit is not a merge, so no approximation note appears either.
+func TestEndToEnd_RebaseOrphanTopicClean(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "main-only.txt", "m\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-q", "--orphan", "topic")
+	gittest.Run(t, dir, "rm", "-rfq", "--", ".")
+	gittest.Write(t, dir, "orphan-only.txt", "o\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "orphan root")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("clean orphan replay should carry no note, got %q", stderr)
+	}
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if !r.Rebaseable || r.Commits != 1 || r.Applied != 1 || r.Conflict != nil {
+		t.Errorf("clean orphan = %+v, want rebaseable/1/1/nil", r)
+	}
+}
+
 // --rebase --path drills into one file of the first conflicting commit with
 // the fuller sample, mirroring the static probe's drill-down.
 func TestEndToEnd_RebaseDrillDown(t *testing.T) {

@@ -48,7 +48,15 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []s
 	// commit to start, then each clean step's result tree.
 	running := base
 	for i, c := range commits {
-		out, conflicted, err := g.MergeTree3(ctx, c.Parent, running, c.OID)
+		// A root commit (an unrelated-history topic) has no parent to diff
+		// against: replay it against the empty tree — its delta is everything it
+		// introduces — the same stand-in the static probe uses for unrelated
+		// histories. An empty --merge-base= would make git die with exit 128.
+		mergeBase := c.Parent
+		if mergeBase == "" {
+			mergeBase = core.EmptyTreeOID
+		}
+		out, conflicted, err := g.MergeTree3(ctx, mergeBase, running, c.OID)
 		if err != nil {
 			return core.RebaseReport{}, nil, err
 		}

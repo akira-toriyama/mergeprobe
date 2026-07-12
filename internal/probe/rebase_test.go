@@ -226,6 +226,35 @@ func TestRunRebase_DrillDownCleanRebase(t *testing.T) {
 	}
 }
 
+// A root commit (no parent — an unrelated-history topic) replays against the
+// empty tree, the same stand-in the static probe uses for unrelated histories:
+// its delta is everything it introduces. Feeding git an empty merge base would
+// die with exit 128 (t-m7sc).
+func TestRunRebase_RootCommitReplaysFromEmptyTree(t *testing.T) {
+	commits := []core.Commit{
+		{OID: strings.Repeat("a", 40), Parent: "", Subject: "orphan root"},
+		{OID: strings.Repeat("b", 40), Parent: strings.Repeat("a", 40), Subject: "orphan child"},
+	}
+	var bases []string
+	g := fakeGit{
+		commits: func(base, topic string) ([]core.Commit, error) { return commits, nil },
+		mergeTree3: func(mergeBase, ours, theirs string) ([]byte, bool, error) {
+			bases = append(bases, mergeBase)
+			return z("T-" + theirs), false, nil
+		},
+	}
+	r, _, err := RunRebase(context.Background(), g, Options{Topic: "topic", Base: "main"})
+	if err != nil {
+		t.Fatalf("RunRebase: %v", err)
+	}
+	if len(bases) != 2 || bases[0] != core.EmptyTreeOID || bases[1] != strings.Repeat("a", 40) {
+		t.Errorf("merge bases = %v, want [empty-tree %s]", bases, strings.Repeat("a", 40))
+	}
+	if !r.Rebaseable || r.Applied != 2 {
+		t.Errorf("orphan replay = %+v, want rebaseable/applied 2", r)
+	}
+}
+
 // A topic containing merge commits is replayed by first-parent approximation
 // (a real rebase drops merges), so RunRebase says so in a note the CLI prints
 // to stderr — instead of silently diverging from git rebase.

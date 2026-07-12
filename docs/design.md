@@ -181,7 +181,10 @@ harder one, since it means running merge-tree once per commit.
    clean step's result tree becomes the next step's running tree. Verified against
    a real `git rebase`: the simulation flags the same commit and file git stops
    on. merge-tree accepts a bare tree OID for the running side, which is what lets
-   the state thread commit to commit.
+   the state thread commit to commit. A root commit (an unrelated-history topic
+   puts one in the range) has no parent to diff against and replays against the
+   empty tree — its delta is everything it introduces, and colliding content
+   surfaces as add/add conflicts.
 
 2. **Merge-cleanly ≠ rebase-cleanly, and that gap is the value.** A merge compares
    the two endpoints; a rebase replays intermediate states, so a branch can merge

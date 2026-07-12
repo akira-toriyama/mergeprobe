@@ -403,6 +403,26 @@ func TestCommitsToReplay_Empty(t *testing.T) {
 	}
 }
 
+// MergeTree3 accepts git's well-known empty tree as the explicit merge base —
+// the rebase simulation replays a root commit that way (its delta from nothing
+// is everything it introduces). Pinned here because the fix for t-m7sc depends
+// on the plumbing accepting a tree (not just a commit) for --merge-base.
+func TestMergeTree3_EmptyTreeMergeBase(t *testing.T) {
+	dir := rebaseScenario(t)
+	r := New(dir)
+	out, _, err := r.MergeTree3(context.Background(), core.EmptyTreeOID, "main", "topic")
+	if err != nil {
+		t.Fatalf("MergeTree3 with empty-tree base: %v", err)
+	}
+	parsed, err := core.ParseMergeTreeZ(out)
+	if err != nil {
+		t.Fatalf("output does not parse: %v", err)
+	}
+	if parsed.Tree == "" {
+		t.Error("no merged tree emitted")
+	}
+}
+
 // MergeTree3 applies theirs's delta (from mergeBase) onto ours — the rebase
 // step. c1 applies cleanly onto main; c2 then conflicts on a.txt.
 func TestMergeTree3(t *testing.T) {
