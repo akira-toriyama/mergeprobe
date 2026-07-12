@@ -227,6 +227,69 @@ func fetchError(stderr []byte, code int) error {
 	return gitError("fetch", stderr, code)
 }
 
+// CommitsToReplay lists the commits a rebase of topic onto base would replay —
+// base..topic, oldest-first in topological order — each with its first parent
+// (the merge base for that replay step) and subject. An empty range (topic
+// already on base) yields no commits.
+func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.Commit, error) {
+	// %H <first-and-other-parents> \x1f <subject>, one line per commit. %s is a
+	// single line, so the \n record separator is unambiguous; \x1f separates the
+	// hash/parent list from the subject without risking a space collision.
+	out, errb, code, err := r.run(ctx, "log", "--reverse", "--topo-order",
+		"--format=%H %P%x1f%s", "--end-of-options", base+".."+topic)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, gitError("log", errb, code)
+	}
+	return parseCommitLog(out), nil
+}
+
+// parseCommitLog decodes CommitsToReplay's "%H %P\x1f%s" lines. The first parent
+// is the second space-separated token before the \x1f; a root commit (no parent)
+// leaves Parent empty.
+func parseCommitLog(out []byte) []core.Commit {
+	var commits []core.Commit
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		meta, subject, _ := strings.Cut(line, "\x1f")
+		fields := strings.Fields(meta)
+		if len(fields) == 0 {
+			continue
+		}
+		c := core.Commit{OID: fields[0], Subject: subject}
+		if len(fields) > 1 {
+			c.Parent = fields[1] // first parent = the rebase step's merge base
+		}
+		commits = append(commits, c)
+	}
+	return commits
+}
+
+// MergeTree3 runs a 3-way merge with an explicit merge base — cherry-pick /
+// rebase-step semantics: apply theirs's delta-from-mergeBase onto ours. ours may
+// be a running tree OID (not a commit), so a rebase can be replayed a commit at a
+// time. Exit 0 = clean, 1 = conflicted, any other code a hard failure. Like
+// MergeTree it writes only objects, never the worktree.
+func (r *Repo) MergeTree3(ctx context.Context, mergeBase, ours, theirs string) ([]byte, bool, error) {
+	out, errb, code, err := r.run(ctx, "merge-tree", "--write-tree", "--allow-unrelated-histories",
+		"-z", "--merge-base="+mergeBase, ours, theirs)
+	if err != nil {
+		return nil, false, err
+	}
+	switch code {
+	case 0:
+		return out, false, nil
+	case 1:
+		return out, true, nil
+	default:
+		return nil, false, gitError("merge-tree", errb, code)
+	}
+}
+
 // MergeBase returns the common ancestor, ok=false when the refs are unrelated.
 func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, bool, error) {
 	out, errb, code, err := r.run(ctx, "merge-base", "--end-of-options", a, b)

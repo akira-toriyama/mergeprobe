@@ -52,6 +52,14 @@ type Git interface {
 	// Remotes maps each configured remote name to its fetch URL, used to route a
 	// owner/repo#N reference to a remote that already points at that repo.
 	Remotes(ctx context.Context) (map[string]string, error)
+	// CommitsToReplay lists the commits a rebase of topic onto base would replay —
+	// base..topic oldest-first, each with its first parent and subject.
+	CommitsToReplay(ctx context.Context, base, topic string) ([]core.Commit, error)
+	// MergeTree3 runs a 3-way merge with an explicit merge base (rebase-step /
+	// cherry-pick semantics): apply theirs's delta-from-mergeBase onto ours, where
+	// ours may be a running tree OID. Returns raw -z stdout and whether it
+	// conflicted (git exit 1).
+	MergeTree3(ctx context.Context, mergeBase, ours, theirs string) (out []byte, conflicted bool, err error)
 }
 
 // Forge is the optional host-metadata port: the one fact merge-tree cannot
@@ -101,32 +109,8 @@ const (
 // topic/base refs, runs the in-memory merge, parses it, and enriches the result
 // with resolution classes, bounded samples, and the both-touched-clean set.
 func Run(ctx context.Context, g Git, opts Options) (core.Report, error) {
-	// Resolve and validate the topic first: it is the thing the caller named, so
-	// its error (e.g. an agent's `mergeprobe 123`) should surface before an
-	// unrelated "cannot determine default base" from resolving --onto.
-	topic := opts.Topic
-	if topic == "" {
-		topic = "HEAD"
-	}
-	if err := validateRef("topic", topic); err != nil {
-		return core.Report{}, err
-	}
-	if _, err := g.ResolveCommit(ctx, topic); err != nil {
-		return core.Report{}, err
-	}
-
-	base := opts.Base
-	if base == "" {
-		b, err := g.DefaultBase(ctx)
-		if err != nil {
-			return core.Report{}, err
-		}
-		base = b
-	}
-	if err := validateRef("--onto", base); err != nil {
-		return core.Report{}, err
-	}
-	if _, err := g.ResolveCommit(ctx, base); err != nil {
+	topic, base, err := resolveTopicBase(ctx, g, opts)
+	if err != nil {
 		return core.Report{}, err
 	}
 
@@ -260,6 +244,38 @@ func buildConflict(ctx context.Context, g Git, tree string, f core.ConflictFile,
 		c.Sample, c.Truncated = core.BoundedSample(hunks, maxLines)
 	}
 	return c
+}
+
+// resolveTopicBase resolves and validates the topic and base refs shared by the
+// merge and rebase probes. The topic is validated first: it is the thing the
+// caller named, so its error (e.g. an agent's `mergeprobe 123`) should surface
+// before an unrelated "cannot determine default base" from resolving --onto.
+// Empty topic means HEAD; empty base resolves git's default (origin/HEAD).
+func resolveTopicBase(ctx context.Context, g Git, opts Options) (topic, base string, err error) {
+	topic = opts.Topic
+	if topic == "" {
+		topic = "HEAD"
+	}
+	if err = validateRef("topic", topic); err != nil {
+		return "", "", err
+	}
+	if _, err = g.ResolveCommit(ctx, topic); err != nil {
+		return "", "", err
+	}
+
+	base = opts.Base
+	if base == "" {
+		if base, err = g.DefaultBase(ctx); err != nil {
+			return "", "", err
+		}
+	}
+	if err = validateRef("--onto", base); err != nil {
+		return "", "", err
+	}
+	if _, err = g.ResolveCommit(ctx, base); err != nil {
+		return "", "", err
+	}
+	return topic, base, nil
 }
 
 // validateRef rejects an empty or leading-dash ref before it reaches git, so a

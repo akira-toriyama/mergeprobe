@@ -302,6 +302,110 @@ func TestRemotes_None(t *testing.T) {
 	}
 }
 
+// rebaseScenario builds base + a two-commit topic where the first commit adds a
+// file cleanly and the second modifies a line the advanced base also changed, so
+// a rebase conflicts on exactly the second commit — the shape RunRebase probes.
+func rebaseScenario(t *testing.T) (dir string) {
+	t.Helper()
+	dir = gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "a1\na2\na3\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "topic")
+	gittest.Write(t, dir, "b.txt", "new\n")
+	gittest.Run(t, dir, "add", "b.txt")
+	gittest.Run(t, dir, "commit", "-qm", "c1 add b")
+	gittest.Write(t, dir, "a.txt", "a1\nTOPIC\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "c2 modify a")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Write(t, dir, "a.txt", "a1\nMAIN\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "main modifies a")
+	return dir
+}
+
+// CommitsToReplay lists base..topic oldest-first, each with its first parent
+// (the rebase step's merge base) and subject.
+func TestCommitsToReplay(t *testing.T) {
+	dir := rebaseScenario(t)
+	r := New(dir)
+	commits, err := r.CommitsToReplay(context.Background(), "main", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("want 2 commits to replay, got %d: %+v", len(commits), commits)
+	}
+	if commits[0].Subject != "c1 add b" || commits[1].Subject != "c2 modify a" {
+		t.Errorf("wrong order/subjects: %+v", commits)
+	}
+	// Each commit's Parent must be the previous commit (linear history).
+	if commits[1].Parent != commits[0].OID {
+		t.Errorf("c2's parent %q should be c1 %q", commits[1].Parent, commits[0].OID)
+	}
+	for _, c := range commits {
+		if len(c.OID) != 40 || len(c.Parent) != 40 {
+			t.Errorf("OID/Parent not full SHAs: %+v", c)
+		}
+	}
+}
+
+// No commits to replay (topic already on base) is an empty list, not an error.
+func TestCommitsToReplay_Empty(t *testing.T) {
+	dir := rebaseScenario(t)
+	r := New(dir)
+	commits, err := r.CommitsToReplay(context.Background(), "topic", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Errorf("want no commits, got %+v", commits)
+	}
+}
+
+// MergeTree3 applies theirs's delta (from mergeBase) onto ours — the rebase
+// step. c1 applies cleanly onto main; c2 then conflicts on a.txt.
+func TestMergeTree3(t *testing.T) {
+	dir := rebaseScenario(t)
+	r := New(dir)
+	ctx := context.Background()
+	commits, err := r.CommitsToReplay(ctx, "main", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	base := gittest.Run(t, dir, "rev-parse", "main")
+
+	// Step 1: c1 (add b.txt) onto main — clean.
+	out, conflicted, err := r.MergeTree3(ctx, commits[0].Parent, base, commits[0].OID)
+	if err != nil || conflicted {
+		t.Fatalf("c1 should apply cleanly: conflicted=%v err=%v", conflicted, err)
+	}
+	mt, err := core.ParseMergeTreeZ(out)
+	if err != nil {
+		t.Fatalf("parse step1: %v", err)
+	}
+	running := mt.Tree
+
+	// Step 2: c2 (modify a.txt) onto the running tree — conflicts.
+	out, conflicted, err = r.MergeTree3(ctx, commits[1].Parent, running, commits[1].OID)
+	if err != nil {
+		t.Fatalf("MergeTree3 step2: %v", err)
+	}
+	if !conflicted {
+		t.Fatal("c2 modifies a line main also changed; the rebase step must conflict")
+	}
+	mt, err = core.ParseMergeTreeZ(out)
+	if err != nil {
+		t.Fatalf("parse step2: %v", err)
+	}
+	byPath := map[string]core.ConflictFile{}
+	for _, f := range mt.Files {
+		byPath[f.Path] = f
+	}
+	if core.Classify(byPath["a.txt"]) != core.ClassBothModified {
+		t.Errorf("a.txt should be both-modified, got %+v", mt.Files)
+	}
+}
+
 // ConflictMarkerSize reads the effective conflict-marker-size for a path from a
 // tree's .gitattributes (matching what merge-tree used), defaulting to 7 when
 // the attribute is unset.

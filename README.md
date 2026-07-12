@@ -4,11 +4,11 @@ Probe what a branch conflicts with — **without touching the worktree**. Wraps
 git 2.38+'s `merge-tree --write-tree` (in-memory merge) and renders the plumbing
 output as bounded JSON an AI coding agent can consume in one turn.
 
-> **Status: the static merge probe and PR-number resolution work.** Any ref
-> pair, resolution classes, bounded samples, `--path` drill-down, the
-> `both_touched_clean` blind-spot list, and `mergeprobe 123` / `owner/repo#123`
-> PR resolution all ship. `--rebase` per-commit simulation is the next
-> milestone — see [docs/design.md](docs/design.md).
+> **Status: the static merge probe, PR-number resolution, and `--rebase`
+> simulation all work.** Any ref pair, resolution classes, bounded samples,
+> `--path` drill-down, the `both_touched_clean` blind-spot list, `mergeprobe
+> 123` / `owner/repo#123` PR resolution, and `--rebase` per-commit conflict
+> simulation all ship — see [docs/design.md](docs/design.md).
 
 ## The pain this kills
 
@@ -33,6 +33,7 @@ $ mergeprobe feature-x --onto origin/main   # any ref pair
 $ mergeprobe 123                            # origin PR #123 — "does it still land?"
 $ mergeprobe cli/cli#872                    # a PR in another repo
 $ mergeprobe feature-x --path app/Kconfig   # drill into one conflicted file
+$ mergeprobe feature-x --onto main --rebase # simulate a rebase, not a merge
 ```
 
 The topic defaults to `HEAD`; `--onto` defaults to `origin/HEAD` (the remote's
@@ -95,6 +96,43 @@ mergeprobe fetches from whichever remote already points at that repo, or from
 `https://github.com/owner/repo.git` when none does. The `base`/`topic` fields
 echo the PR (`#123`, `owner/repo#123`) and base branch you named, not the raw
 OIDs they resolved to.
+
+## Simulating a rebase
+
+Agents usually **rebase**, and a rebase conflict is not a merge conflict: a merge
+looks at the two endpoints, a rebase replays each commit in turn, so a branch can
+merge cleanly yet fail to rebase (or the reverse). `--rebase` replays `base..topic`
+commit by commit and reports the **first commit that conflicts**:
+
+```console
+$ mergeprobe feature-x --onto main --rebase
+{
+  "rebaseable": false,
+  "base": "main",
+  "topic": "feature-x",
+  "commits": 5,
+  "applied": 2,
+  "conflict": {
+    "commit": "1a498dc64cdf",
+    "subject": "retune the power budget",
+    "conflicts": [
+      {"path": "app/Kconfig", "class": "both-modified", "hunks": 1, "sample": "<<<<<<< …"}
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rebaseable` | true when every topic commit replays onto base with no conflict |
+| `commits` | number of commits `base..topic` — the replay length |
+| `applied` | how many replayed cleanly before a conflict stopped it (`== commits` when rebaseable) |
+| `conflict` | the first commit that failed to replay (`commit` short OID, `subject`, and its `conflicts[]` in the same shape as above); omitted for a clean rebase |
+
+Each commit is replayed with an in-memory 3-way merge against its own parent, so
+the worktree is never touched — the same guarantee as the static probe. Simulation
+stops at the first conflict, exactly as a real rebase does. `--rebase` composes
+with PR resolution (`mergeprobe 123 --rebase`) but not with `--path`.
 
 ## Exit codes
 

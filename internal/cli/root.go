@@ -89,6 +89,7 @@ func run(ctx context.Context, args []string) int {
 
 func newRootCmd() *cobra.Command {
 	var onto, path string
+	var rebase bool
 	root := &cobra.Command{
 		Use:   "mergeprobe [<branch>]",
 		Short: "Probe merge conflicts without touching the worktree (git merge-tree → bounded JSON)",
@@ -102,10 +103,12 @@ func newRootCmd() *cobra.Command {
 			"  mergeprobe feature-x --onto origin/main   # any ref pair\n" +
 			"  mergeprobe 123                            # origin PR #123 (fetches pull/123/head)\n" +
 			"  mergeprobe cli/cli#872                    # PR #872 in another repo\n" +
-			"  mergeprobe feature-x --path app/Kconfig   # drill into one conflicted file\n\n" +
+			"  mergeprobe feature-x --path app/Kconfig   # drill into one conflicted file\n" +
+			"  mergeprobe feature-x --onto main --rebase # simulate a rebase, not a merge\n\n" +
 			"For a PR, the base branch comes from gh when available, else origin/HEAD with a\n" +
-			"note (--onto always overrides). A successful probe exits 0 whether or not it\n" +
-			"merges cleanly; read .mergeable in the payload. --rebase is planned (docs/design.md).",
+			"note (--onto always overrides). --rebase replays topic's commits onto base and\n" +
+			"reports the first one that conflicts. A successful probe exits 0 whether or not\n" +
+			"it merges cleanly; read .mergeable (or .rebaseable) in the payload.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Resolve().String(),
@@ -115,19 +118,28 @@ func newRootCmd() *cobra.Command {
 			if len(args) == 1 {
 				topic = args[0]
 			}
+			if rebase && path != "" {
+				return core.Validationf("rebase-path",
+					"--path is not supported with --rebase (drill-down is for the static probe); drop one")
+			}
 			g := newRepo()
 			opts, err := resolveOptions(cmd, g, topic, onto, path)
 			if err != nil {
 				return err
 			}
-			report, err := probe.Run(cmd.Context(), g, opts)
+			var result any
+			if rebase {
+				result, err = probe.RunRebase(cmd.Context(), g, opts)
+			} else {
+				result, err = probe.Run(cmd.Context(), g, opts)
+			}
 			if err != nil {
 				return err
 			}
 			// Classify a stdout write failure as internal/IO (a bare error here
 			// would otherwise fall through to the cobra->validation mapping in
 			// run()); this keeps RunE's contract of always returning *core.Error.
-			if err := writeJSON(cmd.OutOrStdout(), report); err != nil {
+			if err := writeJSON(cmd.OutOrStdout(), result); err != nil {
 				return core.Internalf("output-write", "writing result: %v", err)
 			}
 			return nil
@@ -135,6 +147,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().StringVar(&onto, "onto", "", "ref the topic lands on (default: origin/HEAD)")
 	root.Flags().StringVar(&path, "path", "", "drill into one conflicted file and show its full sample")
+	root.Flags().BoolVar(&rebase, "rebase", false, "simulate a rebase (replay topic's commits onto base) and report the first conflicting commit")
 	root.SetOut(out)
 	root.SetErr(errOut)
 	return root

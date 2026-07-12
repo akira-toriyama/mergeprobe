@@ -334,6 +334,91 @@ func TestEndToEnd_SmallConflictMarkerSize(t *testing.T) {
 	}
 }
 
+// rebaseRepo builds base + a two-commit topic (c1 adds b.txt cleanly, c2
+// modifies a.txt). Returns the repo path; callers add a divergent main.
+func rebaseRepo(t *testing.T) string {
+	t.Helper()
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "a1\na2\na3\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "topic")
+	gittest.Write(t, dir, "b.txt", "new\n")
+	gittest.Run(t, dir, "add", "b.txt")
+	gittest.Run(t, dir, "commit", "-qm", "c1 add b")
+	gittest.Write(t, dir, "a.txt", "a1\nTOPIC\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "c2 modify a")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	return dir
+}
+
+// --rebase replays topic's commits onto an advanced main; the second commit
+// touches a line main also changed, so the rebase conflicts on exactly that
+// commit — the differentiator a bare merge probe cannot show.
+func TestEndToEnd_RebaseConflict(t *testing.T) {
+	dir := rebaseRepo(t)
+	gittest.Write(t, dir, "a.txt", "a1\nMAIN\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "main modifies a")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if r.Rebaseable {
+		t.Error("rebase onto conflicting main should not be rebaseable")
+	}
+	if r.Commits != 2 || r.Applied != 1 {
+		t.Errorf("commits/applied = %d/%d, want 2/1", r.Commits, r.Applied)
+	}
+	if r.Conflict == nil || r.Conflict.Subject != "c2 modify a" {
+		t.Fatalf("first conflict should be c2: %+v", r.Conflict)
+	}
+	if len(r.Conflict.Conflicts) != 1 || r.Conflict.Conflicts[0].Path != "a.txt" {
+		t.Errorf("conflict path should be a.txt: %+v", r.Conflict.Conflicts)
+	}
+	if !strings.Contains(r.Conflict.Conflicts[0].Sample, "<<<<<<<") {
+		t.Errorf("rebase conflict sample lacks markers: %q", r.Conflict.Conflicts[0].Sample)
+	}
+}
+
+// The same topic rebases cleanly onto a main that advanced without touching the
+// topic's files.
+func TestEndToEnd_RebaseClean(t *testing.T) {
+	dir := rebaseRepo(t)
+	gittest.Write(t, dir, "unrelated.txt", "main-only\n")
+	gittest.Run(t, dir, "add", "unrelated.txt")
+	gittest.Run(t, dir, "commit", "-qm", "main adds unrelated")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if !r.Rebaseable || r.Commits != 2 || r.Applied != 2 || r.Conflict != nil {
+		t.Errorf("clean rebase = %+v, want rebaseable/2/2/nil", r)
+	}
+}
+
+// --rebase and --path are mutually exclusive: reject with a usage error rather
+// than silently ignoring one.
+func TestEndToEnd_RebaseWithPathRejected(t *testing.T) {
+	dir := rebaseRepo(t)
+	_, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase", "--path", "a.txt")
+	if code != int(core.CodeValidation) {
+		t.Fatalf("exit = %d, want 2; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "--path") || !strings.Contains(stderr, "--rebase") {
+		t.Errorf("error should name both flags: %q", stderr)
+	}
+}
+
 type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
