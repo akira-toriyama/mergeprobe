@@ -1,0 +1,61 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mergeprobe
+    main: ./cmd/mergeprobe
+    binary: mergeprobe
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    # Reproducible per tag: pin the stamped date to the commit's date (not the
+    # wall-clock build time) and the binary's mod time to the commit timestamp,
+    # so rebuilding the same tag yields byte-identical artifacts. Pairs with the
+    # -trimpath above, which strips the build's local filesystem paths.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/akira-toriyama/mergeprobe/internal/version.Version={{ .Version }}
+      - -X github.com/akira-toriyama/mergeprobe/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/akira-toriyama/mergeprobe/internal/version.Date={{ .CommitDate }}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# Homebrew cask pushed to the family tap on release. GoReleaser v2 ships prebuilt
+# binaries as CASKS (the old `brews:` formula path is deprecated). The live
+# Casks/mergeprobe.rb in akira-toriyama/homebrew-tap is regenerated each release.
+# Install: brew install akira-toriyama/tap/mergeprobe
+homebrew_casks:
+  - repository:
+      owner: akira-toriyama
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/akira-toriyama/mergeprobe
+    description: "Probe what a branch or PR conflicts with — where and how badly — without touching the worktree; bounded JSON for AI agents"
+    commit_author:
+      name: akira-toriyama
+      email: imatomiyuichi@gmail.com
+    commit_msg_template: "homebrew: update {{ .ProjectName }} cask to {{ .Tag }}"
+    # The binary is unsigned; strip the quarantine xattr on macOS so Gatekeeper
+    # allows launch (same pattern as the family's other casks).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mergeprobe"]
+          end
+
+release:
+  # First-class published release on tag push (not a rolling draft): the tag IS
+  # the cut, so binaries + cask land in one step.
+  draft: false

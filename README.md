@@ -166,11 +166,16 @@ clean.
 
 ## Install
 
-From source, for now:
-
 ```sh
+# Homebrew (macOS/Linux)
+brew install akira-toriyama/tap/mergeprobe
+
+# Go
 go install github.com/akira-toriyama/mergeprobe/cmd/mergeprobe@latest
 ```
+
+Prebuilt binaries and checksums for every release are on the
+[Releases](https://github.com/akira-toriyama/mergeprobe/releases) page.
 
 Requires git 2.38+ (`merge-tree --write-tree`) and a clone to run inside.
 [`gh`](https://cli.github.com) is optional — it sharpens PR base-branch
