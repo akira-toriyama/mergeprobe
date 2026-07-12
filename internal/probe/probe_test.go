@@ -33,6 +33,8 @@ type fakeGit struct {
 	fetch      func(source, ref string) (string, error)
 	remotes    func() (map[string]string, error)
 	markerSize func(tree, path string) (int, error)
+	commits    func(base, topic string) ([]core.Commit, error)
+	mergeTree3 func(mergeBase, ours, theirs string) ([]byte, bool, error)
 }
 
 func (f fakeGit) ResolveCommit(_ context.Context, ref string) (string, error) {
@@ -98,6 +100,15 @@ func (f fakeGit) ConflictMarkerSize(_ context.Context, tree, path string) (int, 
 		return f.markerSize(tree, path)
 	}
 	return core.DefaultMarkerSize, nil
+}
+func (f fakeGit) CommitsToReplay(_ context.Context, base, topic string) ([]core.Commit, error) {
+	if f.commits != nil {
+		return f.commits(base, topic)
+	}
+	return nil, nil
+}
+func (f fakeGit) MergeTree3(_ context.Context, mergeBase, ours, theirs string) ([]byte, bool, error) {
+	return f.mergeTree3(mergeBase, ours, theirs)
 }
 
 // fakeForge is an in-memory Forge port. baseRef/ok/err drive the base-resolution
