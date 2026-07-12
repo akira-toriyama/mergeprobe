@@ -184,7 +184,14 @@ harder one, since it means running merge-tree once per commit.
    the state thread commit to commit. A root commit (an unrelated-history topic
    puts one in the range) has no parent to diff against and replays against the
    empty tree — its delta is everything it introduces, and colliding content
-   surfaces as add/add conflicts.
+   surfaces as add/add conflicts. The git adapter owns that substitution
+   (`Commit.Parent` is never empty by contract), resolves the empty tree in the
+   repository's own object format (`hash-object -t tree`, so sha256 repos work
+   where the sha1 constant would not parse), and rejects a parentless commit in
+   a *shallow* clone with a validation error — there it is a graft boundary, not
+   a root: the hidden parents and the truncated replay list make any simulated
+   verdict untruthful, so failing loudly beats confidently reporting spurious
+   add/add conflicts.
 
 2. **Merge-cleanly ≠ rebase-cleanly, and that gap is the value.** A merge compares
    the two endpoints; a rebase replays intermediate states, so a branch can merge

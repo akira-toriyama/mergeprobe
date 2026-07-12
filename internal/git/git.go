@@ -230,7 +230,12 @@ func fetchError(stderr []byte, code int) error {
 // CommitsToReplay lists the commits a rebase of topic onto base would replay —
 // base..topic, oldest-first in topological order — each with its first parent
 // (the merge base for that replay step), subject, and merge-commit flag. An
-// empty range (topic already on base) yields no commits.
+// empty range (topic already on base) yields no commits. Parent is never
+// empty: a true root commit (unrelated-history topic) gets the repository's
+// empty tree — its delta is everything it introduces — while a parentless
+// commit in a shallow clone is a graft boundary whose real parents are hidden
+// (and whose log truncates the replay list itself), so the range is rejected
+// with a validation error rather than simulated untruthfully.
 func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.Commit, error) {
 	// %H <first-and-other-parents> \x1f <subject>, one line per commit. %s is a
 	// single line, so the \n record separator is unambiguous; \x1f separates the
@@ -243,12 +248,62 @@ func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.
 	if code != 0 {
 		return nil, gitError("log", errb, code)
 	}
-	return parseCommitLog(out), nil
+	commits := parseCommitLog(out)
+	for i := range commits {
+		if commits[i].Parent != "" {
+			continue
+		}
+		shallow, err := r.isShallow(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if shallow {
+			return nil, core.Validationf("shallow-history",
+				"cannot simulate a rebase: %s..%s crosses the shallow-clone boundary at %.12s (its parents are hidden); fetch the full history (git fetch --unshallow) and retry",
+				base, topic, commits[i].OID)
+		}
+		empty, err := r.emptyTree(ctx)
+		if err != nil {
+			return nil, err
+		}
+		commits[i].Parent = empty
+	}
+	return commits, nil
+}
+
+// isShallow reports whether the repository is a shallow clone — where a
+// parentless commit in a range is a graft boundary rather than a true root.
+// Queried only when such a commit appears, so the common case pays nothing.
+func (r *Repo) isShallow(ctx context.Context) (bool, error) {
+	out, errb, code, err := r.run(ctx, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, err
+	}
+	if code != 0 {
+		return false, gitError("rev-parse", errb, code)
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+// emptyTree returns the empty tree's OID in the repository's object format.
+// hash-object computes it (sha1: core.EmptyTreeOID, sha256: its own hash), so
+// a sha256 repository gets a resolvable base where the sha1 constant would
+// make merge-tree die with "could not parse as tree". Stdin is nil (empty).
+func (r *Repo) emptyTree(ctx context.Context) (string, error) {
+	out, errb, code, err := r.run(ctx, "hash-object", "-t", "tree", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", gitError("hash-object", errb, code)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // parseCommitLog decodes CommitsToReplay's "%H %P\x1f%s" lines. The first parent
-// is the second space-separated token before the \x1f; a root commit (no parent)
-// leaves Parent empty, and a second parent marks a merge commit.
+// is the second space-separated token before the \x1f; a parentless commit
+// leaves Parent empty for CommitsToReplay to resolve (root vs shallow
+// boundary), and a second parent marks a merge commit.
 func parseCommitLog(out []byte) []core.Commit {
 	var commits []core.Commit
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {

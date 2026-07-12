@@ -145,6 +145,12 @@ simulation actually replayed one — a merge past the first conflict never
 influenced the verdict, so it is not flagged — and the common linear feature
 branch never hits this.
 
+An unrelated-history topic (a root commit in `base..topic`) replays its root
+against the empty tree — colliding files surface as add/add conflicts. In a
+**shallow clone**, though, a parentless commit is the fetch boundary, not a
+root: the hidden parents make a truthful simulation impossible, so `--rebase`
+refuses with exit 2 — `git fetch --unshallow` and retry.
+
 ## Exit codes
 
 | Code | Meaning |

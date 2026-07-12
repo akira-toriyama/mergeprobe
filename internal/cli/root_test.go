@@ -471,11 +471,7 @@ func TestEndToEnd_RebaseOrphanTopicConflict(t *testing.T) {
 	gittest.Write(t, dir, "shared.txt", "main version\n")
 	gittest.Run(t, dir, "add", ".")
 	gittest.Run(t, dir, "commit", "-qm", "base")
-	gittest.Run(t, dir, "checkout", "-q", "--orphan", "topic")
-	gittest.Write(t, dir, "shared.txt", "orphan version\n")
-	gittest.Run(t, dir, "add", ".")
-	gittest.Run(t, dir, "commit", "-qm", "orphan root")
-	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Orphan(t, dir, "topic", "orphan root", map[string]string{"shared.txt": "orphan version\n"})
 
 	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
 	if code != int(core.CodeOK) {
@@ -506,12 +502,7 @@ func TestEndToEnd_RebaseOrphanTopicClean(t *testing.T) {
 	gittest.Write(t, dir, "main-only.txt", "m\n")
 	gittest.Run(t, dir, "add", ".")
 	gittest.Run(t, dir, "commit", "-qm", "base")
-	gittest.Run(t, dir, "checkout", "-q", "--orphan", "topic")
-	gittest.Run(t, dir, "rm", "-rfq", "--", ".")
-	gittest.Write(t, dir, "orphan-only.txt", "o\n")
-	gittest.Run(t, dir, "add", ".")
-	gittest.Run(t, dir, "commit", "-qm", "orphan root")
-	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Orphan(t, dir, "topic", "orphan root", map[string]string{"orphan-only.txt": "o\n"})
 
 	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase")
 	if code != int(core.CodeOK) {

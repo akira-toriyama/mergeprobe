@@ -59,6 +59,22 @@ func Write(t *testing.T, dir, name, content string) {
 	}
 }
 
+// Orphan creates an orphan branch (an unrelated history) named name containing
+// exactly files, commits it with subject, and returns to main. The index and
+// worktree inherited from the current branch are cleared first, so the root
+// commit holds only what files names; an empty map yields an empty root.
+func Orphan(t *testing.T, dir, name, subject string, files map[string]string) {
+	t.Helper()
+	Run(t, dir, "checkout", "-q", "--orphan", name)
+	Run(t, dir, "rm", "-rfq", "--ignore-unmatch", "--", ".")
+	for f, content := range files {
+		Write(t, dir, f, content)
+	}
+	Run(t, dir, "add", "-A")
+	Run(t, dir, "commit", "-q", "--allow-empty", "-m", subject)
+	Run(t, dir, "checkout", "-q", "main")
+}
+
 // ConflictRepo builds a repo with a base commit and two divergent branches,
 // "ours" and "theirs", colliding three ways: f.txt (content), addonly.txt
 // (add/add), and d.txt (modify/delete — ours deletes, theirs modifies). main is

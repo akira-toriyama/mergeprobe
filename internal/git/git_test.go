@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
@@ -94,8 +96,7 @@ func TestMergeBase(t *testing.T) {
 		t.Fatalf("MergeBase ours/theirs: oid=%q ok=%v err=%v", oid, ok, err)
 	}
 	// Unrelated history → no merge base.
-	gittest.Run(t, dir, "checkout", "-q", "--orphan", "island")
-	gittest.Run(t, dir, "commit", "-q", "--allow-empty", "-m", "island")
+	gittest.Orphan(t, dir, "island", "island", nil)
 	_, ok, err = r.MergeBase(context.Background(), "main", "island")
 	if err != nil {
 		t.Fatalf("MergeBase unrelated errored: %v", err)
@@ -184,11 +185,7 @@ func TestMergeTree_UnrelatedHistories(t *testing.T) {
 	gittest.Write(t, dir, "a.txt", "from main\n")
 	gittest.Run(t, dir, "add", ".")
 	gittest.Run(t, dir, "commit", "-qm", "main")
-	gittest.Run(t, dir, "checkout", "-q", "--orphan", "island")
-	gittest.Run(t, dir, "rm", "-rfq", ".")
-	gittest.Write(t, dir, "a.txt", "from island\n")
-	gittest.Run(t, dir, "add", ".")
-	gittest.Run(t, dir, "commit", "-qm", "island")
+	gittest.Orphan(t, dir, "island", "island", map[string]string{"a.txt": "from island\n"})
 
 	r := New(dir)
 	_, conflicted, err := r.MergeTree(context.Background(), "main", "island")
@@ -387,6 +384,101 @@ func TestCommitsToReplay_MarksMergeCommits(t *testing.T) {
 	}
 	if t1 := gittest.Run(t, dir, "rev-parse", "topic^"); merge.Parent != t1 {
 		t.Errorf("merge Parent = %q, want first parent %q", merge.Parent, t1)
+	}
+}
+
+// A root commit (orphan topic) gets the repository's empty tree as its Parent:
+// its delta is everything it introduces. Parent must never reach the probe
+// empty — an empty --merge-base= kills git with exit 128 (t-m7sc).
+func TestCommitsToReplay_RootCommitReplaysAgainstEmptyTree(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "shared.txt", "main version\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Orphan(t, dir, "topic", "orphan root", map[string]string{"shared.txt": "orphan version\n"})
+
+	r := New(dir)
+	commits, err := r.CommitsToReplay(context.Background(), "main", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("want 1 commit, got %+v", commits)
+	}
+	if commits[0].Parent != core.EmptyTreeOID {
+		t.Errorf("root Parent = %q, want the empty tree %q", commits[0].Parent, core.EmptyTreeOID)
+	}
+}
+
+// The empty-tree substitution follows the repository's object format: a sha256
+// repo has a different empty-tree OID than core.EmptyTreeOID (the sha1
+// constant), and merge-tree must accept the substituted base there too.
+func TestCommitsToReplay_RootCommitSHA256(t *testing.T) {
+	gittest.SkipIfNoGit(t)
+	dir := t.TempDir()
+	init := exec.Command("git", "init", "-q", "-b", "main", "--object-format=sha256")
+	init.Dir = dir
+	if out, err := init.CombinedOutput(); err != nil {
+		t.Skipf("sha256 object format unavailable: %v\n%s", err, out)
+	}
+	gittest.Run(t, dir, "config", "user.email", "test@mergeprobe.local")
+	gittest.Run(t, dir, "config", "user.name", "mergeprobe test")
+	gittest.Run(t, dir, "config", "commit.gpgsign", "false")
+	gittest.Write(t, dir, "shared.txt", "main version\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Orphan(t, dir, "topic", "orphan root", map[string]string{"shared.txt": "orphan version\n"})
+
+	r := New(dir)
+	commits, err := r.CommitsToReplay(context.Background(), "main", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	if len(commits) != 1 || commits[0].Parent == "" || commits[0].Parent == core.EmptyTreeOID {
+		t.Fatalf("sha256 root Parent should be the sha256 empty tree, got %+v", commits)
+	}
+	// The substituted base must be usable by the replay step.
+	_, conflicted, err := r.MergeTree3(context.Background(), commits[0].Parent, "main", commits[0].OID)
+	if err != nil {
+		t.Fatalf("MergeTree3 with the sha256 empty tree: %v", err)
+	}
+	if !conflicted {
+		t.Error("colliding shared.txt should conflict (add/add)")
+	}
+}
+
+// A shallow clone hides parents at its boundary: a parentless commit there is
+// NOT a root, no truthful delta exists for it, and the shallow log truncates
+// the replay list itself — so CommitsToReplay refuses (validation) instead of
+// letting the simulation fabricate deltas and report a confident wrong verdict.
+func TestCommitsToReplay_ShallowBoundaryRejected(t *testing.T) {
+	origin := gittest.Init(t)
+	gittest.Write(t, origin, "shared.txt", "line1\nline2\nline3\n")
+	gittest.Run(t, origin, "add", ".")
+	gittest.Run(t, origin, "commit", "-qm", "base")
+	gittest.Run(t, origin, "checkout", "-qb", "topic")
+	for i, subject := range []string{"t1", "t2", "t3"} {
+		gittest.Write(t, origin, "f.txt", strings.Repeat("x", i+1)+"\n")
+		gittest.Run(t, origin, "add", "f.txt")
+		gittest.Run(t, origin, "commit", "-qm", subject)
+	}
+	gittest.Run(t, origin, "checkout", "-q", "main")
+	gittest.Write(t, origin, "main.txt", "m\n")
+	gittest.Run(t, origin, "add", "main.txt")
+	gittest.Run(t, origin, "commit", "-qm", "m1")
+
+	// Depth 2 puts the boundary (t2, parents hidden) inside main..topic.
+	clone := t.TempDir()
+	gittest.Run(t, clone, "clone", "-q", "--no-local", "--depth", "2", "--no-single-branch", "file://"+origin, ".")
+
+	r := New(clone)
+	_, err := r.CommitsToReplay(context.Background(), "origin/main", "origin/topic")
+	ce := core.AsError(err)
+	if ce == nil || ce.Code != core.CodeValidation {
+		t.Fatalf("want a validation error for the shallow boundary, got %v", err)
+	}
+	if !strings.Contains(ce.Msg, "shallow") {
+		t.Errorf("message should name the shallow clone: %q", ce.Msg)
 	}
 }
 
