@@ -116,6 +116,10 @@ git 2.53 before fixing):
    but only when the default-7 pass found nothing, so the common case pays no
    extra I/O. (Found by the second-round review; verdict/class were always
    correct since they derive from stages, so this was a degraded sample.)
+   `check-attr --source` needs git 2.40+, above the 2.38 `merge-tree
+   --write-tree` floor; on 2.38–2.39 the lookup errors, `buildConflict` swallows
+   it, and a lowered-marker conflict falls back to the pre-fix `hunks:0`/no-sample
+   — a graceful degradation of one rare case, not a failure.
 
 ## Implementation notes (PR-number resolution)
 
