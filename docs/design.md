@@ -215,5 +215,6 @@ harder one, since it means running merge-tree once per commit.
    the merge commit conflicts in the simulation while a real `git rebase`
    completes cleanly past it. Rather than silently diverging (or paying for
    `--rebase-merges` fidelity), `RunRebase` returns a note the CLI prints to
-   stderr whenever the replay range contains a merge commit; the common linear
-   feature branch never sees it.
+   stderr whenever the simulation actually replayed a merge commit (one past
+   the first conflict never influenced the verdict, so it is not flagged); the
+   common linear feature branch never sees it.

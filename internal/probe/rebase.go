@@ -23,9 +23,9 @@ import (
 // merge-tree per commit — genuinely hard to compose in a single turn.
 //
 // The returned notes are human diagnostics for stderr (the ResolvePR
-// convention): today, a warning when the range contains merge commits, which
-// replay as first-parent deltas — an approximation a real rebase (which drops
-// merges) does not share.
+// convention): today, a warning when the simulation actually replayed a merge
+// commit, which it does as a first-parent delta — an approximation a real
+// rebase (which drops merges) does not share.
 func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []string, error) {
 	topic, base, err := resolveTopicBase(ctx, g, opts)
 	if err != nil {
@@ -42,7 +42,7 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []s
 		Commits:    len(commits),
 		Rebaseable: true,
 	}
-	notes := mergeCommitNotes(report.Base, report.Topic, commits)
+	var notes []string
 
 	// running is the tree each successive commit is replayed onto: the base
 	// commit to start, then each clean step's result tree.
@@ -57,6 +57,10 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []s
 			return core.RebaseReport{}, nil, err
 		}
 		if conflicted {
+			// Note only merges the simulation actually replayed (this commit
+			// included): a merge past the stop point never influenced the verdict,
+			// and the linear prefix before it matches a real rebase exactly.
+			notes = mergeCommitNotes(report.Base, report.Topic, commits[:i+1])
 			report.Rebaseable = false
 			report.Applied = i // commits that landed cleanly before this one
 			rc := &core.RebaseConflict{Commit: shorten(c.OID), Subject: c.Subject}
@@ -87,19 +91,21 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []s
 		}
 		running = parsed.Tree
 	}
+	notes = mergeCommitNotes(report.Base, report.Topic, commits)
 	if opts.Path != "" {
 		return core.RebaseReport{}, notes, core.NotFoundf("path-not-conflicted",
-			"the rebase replays cleanly, so there is no conflicted file to drill into")
+			"%q did not conflict: the rebase replays cleanly, so there is no file to drill into", opts.Path)
 	}
 	report.Applied = len(commits)
 	report.Normalize()
 	return report, notes, nil
 }
 
-// mergeCommitNotes warns when the replay range contains merge commits: each
-// replays as its first-parent delta, while a real rebase drops merges, so the
+// mergeCommitNotes warns when the replayed commits include merges: each
+// replayed as its first-parent delta, while a real rebase drops merges, so the
 // verdict can differ (design.md "Implementation notes (--rebase simulation)").
-// A linear topic — the common case — yields nothing.
+// Callers pass only the commits the simulation actually replayed; a linear
+// topic — the common case — yields nothing.
 func mergeCommitNotes(base, topic string, commits []core.Commit) []string {
 	merges := 0
 	for _, c := range commits {

@@ -141,7 +141,9 @@ A topic that itself contains **merge commits** is approximated: each replays as
 its first-parent delta, while a real rebase drops merges, so the verdict can
 differ (e.g. an "evil" resolution living only in the merge commit conflicts here
 but vanishes in a real rebase). mergeprobe prints a `note:` to stderr when the
-range contains one; the common linear feature branch never hits this.
+simulation actually replayed one — a merge past the first conflict never
+influenced the verdict, so it is not flagged — and the common linear feature
+branch never hits this.
 
 ## Exit codes
 

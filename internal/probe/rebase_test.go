@@ -253,3 +253,34 @@ func TestRunRebase_MergeCommitNote(t *testing.T) {
 		t.Errorf("noted rebase = %+v, want rebaseable/applied 2", r)
 	}
 }
+
+// A merge commit the simulation never reached must not be noted: when the
+// first conflict precedes every merge in the range, the replayed prefix is
+// linear and the verdict matches a real rebase exactly — a note would be a
+// false alarm.
+func TestRunRebase_NoNoteWhenConflictPrecedesMerge(t *testing.T) {
+	commits := []core.Commit{
+		{OID: strings.Repeat("a", 40), Parent: "p1", Subject: "c1"},
+		{OID: strings.Repeat("e", 40), Parent: "p2", Subject: "merge side", Merge: true},
+	}
+	g := fakeGit{
+		commits: func(base, topic string) ([]core.Commit, error) { return commits, nil },
+		mergeTree3: func(mergeBase, ours, theirs string) ([]byte, bool, error) {
+			if theirs == strings.Repeat("a", 40) {
+				return conflictBytes(), true, nil // first commit conflicts; merge never replays
+			}
+			return z("t"), false, nil
+		},
+		showBlob: func(treeish, path string) ([]byte, error) { return markeredBlob(), nil },
+	}
+	r, notes, err := RunRebase(context.Background(), g, Options{Topic: "topic", Base: "main"})
+	if err != nil {
+		t.Fatalf("RunRebase: %v", err)
+	}
+	if len(notes) != 0 {
+		t.Errorf("merge commit was never replayed; want no notes, got %v", notes)
+	}
+	if r.Rebaseable || r.Conflict == nil || r.Conflict.Subject != "c1" {
+		t.Errorf("conflict should stop at c1: %+v", r)
+	}
+}

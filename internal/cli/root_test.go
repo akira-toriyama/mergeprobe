@@ -456,8 +456,10 @@ func TestEndToEnd_RebaseMergeCommitNoteAndDivergence(t *testing.T) {
 	}
 
 	// The divergence the note warns about: a real rebase drops the merge commit
-	// (and its evil edit), so the same rebase completes cleanly.
-	gittest.Run(t, dir, "rebase", "main", "topic")
+	// (and its evil edit), so the same rebase completes cleanly. The default
+	// drop-merges behavior is forced with --no-rebase-merges so an ambient
+	// rebase.rebaseMerges=true in the runner's global config cannot flip it.
+	gittest.Run(t, dir, "rebase", "--no-rebase-merges", "main", "topic")
 }
 
 // --rebase --path drills into one file of the first conflicting commit with

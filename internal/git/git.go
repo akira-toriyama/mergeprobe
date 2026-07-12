@@ -229,8 +229,8 @@ func fetchError(stderr []byte, code int) error {
 
 // CommitsToReplay lists the commits a rebase of topic onto base would replay —
 // base..topic, oldest-first in topological order — each with its first parent
-// (the merge base for that replay step) and subject. An empty range (topic
-// already on base) yields no commits.
+// (the merge base for that replay step), subject, and merge-commit flag. An
+// empty range (topic already on base) yields no commits.
 func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.Commit, error) {
 	// %H <first-and-other-parents> \x1f <subject>, one line per commit. %s is a
 	// single line, so the \n record separator is unambiguous; \x1f separates the
