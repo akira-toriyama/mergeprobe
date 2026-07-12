@@ -10,6 +10,10 @@ type Commit struct {
 	OID     string
 	Parent  string
 	Subject string
+	// Merge marks a commit with more than one parent. The simulation replays it
+	// as its first-parent delta — an approximation a real rebase (which drops
+	// merges) does not share — so the probe warns when the range contains one.
+	Merge bool
 }
 
 // RebaseReport answers "does <topic> rebase cleanly onto <base>, and if not,

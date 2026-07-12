@@ -132,7 +132,18 @@ $ mergeprobe feature-x --onto main --rebase
 Each commit is replayed with an in-memory 3-way merge against its own parent, so
 the worktree is never touched — the same guarantee as the static probe. Simulation
 stops at the first conflict, exactly as a real rebase does. `--rebase` composes
-with PR resolution (`mergeprobe 123 --rebase`) but not with `--path`.
+with PR resolution (`mergeprobe 123 --rebase`) and with `--path`, which drills
+into one conflicted file of the first conflicting commit (full sample, every
+hunk) and exits 1 when that commit does not conflict on it — or when the rebase
+replays cleanly and there is nothing to drill into.
+
+A topic that itself contains **merge commits** is approximated: each replays as
+its first-parent delta, while a real rebase drops merges, so the verdict can
+differ (e.g. an "evil" resolution living only in the merge commit conflicts here
+but vanishes in a real rebase). mergeprobe prints a `note:` to stderr when the
+simulation actually replayed one — a merge past the first conflict never
+influenced the verdict, so it is not flagged — and the common linear feature
+branch never hits this.
 
 ## Exit codes
 

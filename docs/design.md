@@ -203,7 +203,18 @@ harder one, since it means running merge-tree once per commit.
    each conflicting file goes through the same `buildConflict` (class, binary,
    bounded sample, marker-size handling). `--rebase` composes with PR resolution
    (`mergeprobe 123 --rebase`) for free — it just runs on the resolved
-   `Options` — and is rejected with `--path` (drill-down is a static-probe
-   concern). v1 replays each commit by its first parent; a topic containing merge
-   commits is approximated (not `rebase --rebase-merges`), which the common linear
-   feature branch never hits.
+   `Options` — and with `--path`, which narrows the first conflicting commit's
+   report to that one file with the fuller drill-down sample (not-found when the
+   commit does not conflict on it, or when the rebase is clean — the static
+   probe's contract).
+
+5. **Merge commits replay as first-parent deltas, and the probe says so.** A
+   real rebase drops merge commits; the simulation replays each as its delta
+   from its first parent, so a merge-containing topic can get a different
+   verdict — pinned by an integration test where an "evil" edit riding only in
+   the merge commit conflicts in the simulation while a real `git rebase`
+   completes cleanly past it. Rather than silently diverging (or paying for
+   `--rebase-merges` fidelity), `RunRebase` returns a note the CLI prints to
+   stderr whenever the simulation actually replayed a merge commit (one past
+   the first conflict never influenced the verdict, so it is not flagged); the
+   common linear feature branch never sees it.

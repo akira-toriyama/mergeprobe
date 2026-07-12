@@ -349,6 +349,47 @@ func TestCommitsToReplay(t *testing.T) {
 	}
 }
 
+// A merge commit in base..topic is flagged (Merge) so the rebase simulation can
+// note the first-parent approximation; its Parent is still the first parent.
+func TestCommitsToReplay_MarksMergeCommits(t *testing.T) {
+	dir := gittest.Init(t)
+	gittest.Write(t, dir, "a.txt", "a\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Run(t, dir, "checkout", "-qb", "side")
+	gittest.Write(t, dir, "b.txt", "b\n")
+	gittest.Run(t, dir, "add", "b.txt")
+	gittest.Run(t, dir, "commit", "-qm", "s1 add b")
+	gittest.Run(t, dir, "checkout", "-q", "main")
+	gittest.Run(t, dir, "checkout", "-qb", "topic")
+	gittest.Write(t, dir, "c.txt", "c\n")
+	gittest.Run(t, dir, "add", "c.txt")
+	gittest.Run(t, dir, "commit", "-qm", "t1 add c")
+	gittest.Run(t, dir, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+
+	r := New(dir)
+	commits, err := r.CommitsToReplay(context.Background(), "main", "topic")
+	if err != nil {
+		t.Fatalf("CommitsToReplay: %v", err)
+	}
+	if len(commits) != 3 {
+		t.Fatalf("want t1+s1+merge = 3 commits, got %d: %+v", len(commits), commits)
+	}
+	for _, c := range commits {
+		if want := c.Subject == "merge side"; c.Merge != want {
+			t.Errorf("%q: Merge = %v, want %v", c.Subject, c.Merge, want)
+		}
+	}
+	// The merge's Parent stays its first parent — the mainline t1, not side.
+	merge := commits[2]
+	if merge.Subject != "merge side" {
+		t.Fatalf("merge should replay last, got %+v", commits)
+	}
+	if t1 := gittest.Run(t, dir, "rev-parse", "topic^"); merge.Parent != t1 {
+		t.Errorf("merge Parent = %q, want first parent %q", merge.Parent, t1)
+	}
+}
+
 // No commits to replay (topic already on base) is an empty list, not an error.
 func TestCommitsToReplay_Empty(t *testing.T) {
 	dir := rebaseScenario(t)

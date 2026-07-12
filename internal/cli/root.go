@@ -107,8 +107,9 @@ func newRootCmd() *cobra.Command {
 			"  mergeprobe feature-x --onto main --rebase # simulate a rebase, not a merge\n\n" +
 			"For a PR, the base branch comes from gh when available, else origin/HEAD with a\n" +
 			"note (--onto always overrides). --rebase replays topic's commits onto base and\n" +
-			"reports the first one that conflicts. A successful probe exits 0 whether or not\n" +
-			"it merges cleanly; read .mergeable (or .rebaseable) in the payload.",
+			"reports the first one that conflicts; add --path to drill into one file of that\n" +
+			"commit. A successful probe exits 0 whether or not it merges cleanly; read\n" +
+			".mergeable (or .rebaseable) in the payload.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Resolve().String(),
@@ -118,10 +119,6 @@ func newRootCmd() *cobra.Command {
 			if len(args) == 1 {
 				topic = args[0]
 			}
-			if rebase && path != "" {
-				return core.Validationf("rebase-path",
-					"--path is not supported with --rebase (drill-down is for the static probe); drop one")
-			}
 			g := newRepo()
 			opts, err := resolveOptions(cmd, g, topic, onto, path)
 			if err != nil {
@@ -129,7 +126,11 @@ func newRootCmd() *cobra.Command {
 			}
 			var result any
 			if rebase {
-				result, err = probe.RunRebase(cmd.Context(), g, opts)
+				var notes []string
+				result, notes, err = probe.RunRebase(cmd.Context(), g, opts)
+				for _, n := range notes {
+					fmt.Fprintln(cmd.ErrOrStderr(), "note: "+n)
+				}
 			} else {
 				result, err = probe.Run(cmd.Context(), g, opts)
 			}
