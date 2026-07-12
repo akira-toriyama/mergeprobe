@@ -460,16 +460,48 @@ func TestEndToEnd_RebaseMergeCommitNoteAndDivergence(t *testing.T) {
 	gittest.Run(t, dir, "rebase", "main", "topic")
 }
 
-// --rebase and --path are mutually exclusive: reject with a usage error rather
-// than silently ignoring one.
-func TestEndToEnd_RebaseWithPathRejected(t *testing.T) {
+// --rebase --path drills into one file of the first conflicting commit with
+// the fuller sample, mirroring the static probe's drill-down.
+func TestEndToEnd_RebaseDrillDown(t *testing.T) {
 	dir := rebaseRepo(t)
-	_, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase", "--path", "a.txt")
-	if code != int(core.CodeValidation) {
-		t.Fatalf("exit = %d, want 2; stderr=%s", code, stderr)
+	gittest.Write(t, dir, "a.txt", "a1\nMAIN\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "main modifies a")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase", "--path", "a.txt")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "--path") || !strings.Contains(stderr, "--rebase") {
-		t.Errorf("error should name both flags: %q", stderr)
+	var r core.RebaseReport
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout not a RebaseReport: %v\n%s", err, stdout)
+	}
+	if r.Conflict == nil || r.Conflict.Subject != "c2 modify a" {
+		t.Fatalf("first conflict should be c2: %+v", r.Conflict)
+	}
+	if len(r.Conflict.Conflicts) != 1 || r.Conflict.Conflicts[0].Path != "a.txt" {
+		t.Fatalf("drill-down should isolate a.txt: %+v", r.Conflict.Conflicts)
+	}
+	if !strings.Contains(r.Conflict.Conflicts[0].Sample, "<<<<<<<") {
+		t.Errorf("drill-down sample lacks markers: %q", r.Conflict.Conflicts[0].Sample)
+	}
+}
+
+// --rebase --path on a file the first conflicting commit does not conflict on
+// exits 1 (not found) with a message naming the path, like the static probe.
+func TestEndToEnd_RebaseDrillDownUnknownPath(t *testing.T) {
+	dir := rebaseRepo(t)
+	gittest.Write(t, dir, "a.txt", "a1\nMAIN\na3\n")
+	gittest.Run(t, dir, "commit", "-qam", "main modifies a")
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main", "--rebase", "--path", "nope.txt")
+	if code != int(core.CodeNotFound) {
+		t.Fatalf("exit = %d, want 1 (not found); stderr=%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout should be empty on error, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "nope.txt") {
+		t.Errorf("stderr should name the path: %q", stderr)
 	}
 }
 

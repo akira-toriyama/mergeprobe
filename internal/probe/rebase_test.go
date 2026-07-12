@@ -160,6 +160,72 @@ func TestRunRebase_UsesLabels(t *testing.T) {
 	}
 }
 
+// twoFileConflictBytes is a conflicted merge-tree -z payload naming two files,
+// so drill-down tests can prove the narrowing to one.
+func twoFileConflictBytes() []byte {
+	return z(
+		"tree2",
+		"100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tf.txt",
+		"100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tf.txt",
+		"100644 cccccccccccccccccccccccccccccccccccccccc 3\tf.txt",
+		"100644 dddddddddddddddddddddddddddddddddddddddd 1\tg.txt",
+		"100644 1111111111111111111111111111111111111111 2\tg.txt",
+		"100644 2222222222222222222222222222222222222222 3\tg.txt",
+		"", "1", "f.txt", "CONFLICT (contents)", "CONFLICT (content): Merge conflict in f.txt\n",
+		"1", "g.txt", "CONFLICT (contents)", "CONFLICT (content): Merge conflict in g.txt\n",
+	)
+}
+
+// --path narrows a conflicting replay to that one file, with the fuller
+// drill-down sample (every hunk, not just the first).
+func TestRunRebase_DrillDown(t *testing.T) {
+	g := fakeGit{
+		commits: func(base, topic string) ([]core.Commit, error) { return twoCommits(), nil },
+		mergeTree3: func(mergeBase, ours, theirs string) ([]byte, bool, error) {
+			return twoFileConflictBytes(), true, nil
+		},
+		showBlob: func(treeish, path string) ([]byte, error) { return markeredBlob(), nil },
+	}
+	r, _, err := RunRebase(context.Background(), g, Options{Topic: "topic", Base: "main", Path: "g.txt"})
+	if err != nil {
+		t.Fatalf("RunRebase: %v", err)
+	}
+	if r.Conflict == nil || len(r.Conflict.Conflicts) != 1 || r.Conflict.Conflicts[0].Path != "g.txt" {
+		t.Fatalf("drill-down should isolate g.txt: %+v", r.Conflict)
+	}
+	if s := r.Conflict.Conflicts[0].Sample; !strings.Contains(s, "ours2") {
+		t.Errorf("drill-down sample should span every hunk, got %q", s)
+	}
+}
+
+// --path on a file the first conflicting commit does not conflict on is a
+// not-found, mirroring the static probe's contract.
+func TestRunRebase_DrillDownPathNotConflicted(t *testing.T) {
+	g := fakeGit{
+		commits: func(base, topic string) ([]core.Commit, error) { return twoCommits(), nil },
+		mergeTree3: func(mergeBase, ours, theirs string) ([]byte, bool, error) {
+			return conflictBytes(), true, nil
+		},
+	}
+	_, _, err := RunRebase(context.Background(), g, Options{Topic: "topic", Base: "main", Path: "nope.txt"})
+	if ce := core.AsError(err); ce == nil || ce.Code != core.CodeNotFound {
+		t.Errorf("want not-found error, got %v", err)
+	}
+}
+
+// --path on a rebase that replays cleanly has nothing to drill into: not-found,
+// like asking the static probe about a file that did not conflict.
+func TestRunRebase_DrillDownCleanRebase(t *testing.T) {
+	g := fakeGit{
+		commits:    func(base, topic string) ([]core.Commit, error) { return twoCommits(), nil },
+		mergeTree3: func(mergeBase, ours, theirs string) ([]byte, bool, error) { return z("t"), false, nil },
+	}
+	_, _, err := RunRebase(context.Background(), g, Options{Topic: "topic", Base: "main", Path: "f.txt"})
+	if ce := core.AsError(err); ce == nil || ce.Code != core.CodeNotFound {
+		t.Errorf("want not-found error for a clean rebase, got %v", err)
+	}
+}
+
 // A topic containing merge commits is replayed by first-parent approximation
 // (a real rebase drops merges), so RunRebase says so in a note the CLI prints
 // to stderr — instead of silently diverging from git rebase.

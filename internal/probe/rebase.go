@@ -13,7 +13,10 @@ import (
 // commit's parent (the same delta a rebase applies), threading the result tree
 // into the next step. A real rebase stops at the first conflict and so does
 // this — the running tree past a conflict is not meaningfully replayable — so at
-// most one conflicting commit is reported. Nothing touches the worktree.
+// most one conflicting commit is reported. A non-empty opts.Path narrows that
+// commit's report to the one file with the fuller drill-down sample, erroring
+// not-found when the commit does not conflict on it (or the rebase is clean).
+// Nothing touches the worktree.
 //
 // This is the design's differentiator: rebase conflicts differ from merge
 // conflicts, agents usually rebase, and simulating one by hand means running
@@ -57,14 +60,36 @@ func RunRebase(ctx context.Context, g Git, opts Options) (core.RebaseReport, []s
 			report.Rebaseable = false
 			report.Applied = i // commits that landed cleanly before this one
 			rc := &core.RebaseConflict{Commit: shorten(c.OID), Subject: c.Subject}
-			for _, f := range parsed.Files {
-				rc.Conflicts = append(rc.Conflicts, buildConflict(ctx, g, parsed.Tree, f, summarySampleLines, false))
+			if opts.Path != "" {
+				// Drill-down: isolate the one requested file of this commit's
+				// conflicts and emit its fuller sample, like the static probe.
+				found := false
+				for _, f := range parsed.Files {
+					if f.Path == opts.Path {
+						rc.Conflicts = []core.Conflict{buildConflict(ctx, g, parsed.Tree, f, drillSampleLines, true)}
+						found = true
+						break
+					}
+				}
+				if !found {
+					return core.RebaseReport{}, notes, core.NotFoundf("path-not-conflicted",
+						"%q is not among the files commit %s conflicts on (run without --path to list them)",
+						opts.Path, rc.Commit)
+				}
+			} else {
+				for _, f := range parsed.Files {
+					rc.Conflicts = append(rc.Conflicts, buildConflict(ctx, g, parsed.Tree, f, summarySampleLines, false))
+				}
 			}
 			report.Conflict = rc
 			report.Normalize()
 			return report, notes, nil
 		}
 		running = parsed.Tree
+	}
+	if opts.Path != "" {
+		return core.RebaseReport{}, notes, core.NotFoundf("path-not-conflicted",
+			"the rebase replays cleanly, so there is no conflicted file to drill into")
 	}
 	report.Applied = len(commits)
 	report.Normalize()
