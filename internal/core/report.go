@@ -2,12 +2,6 @@ package core
 
 import "sort"
 
-// EmptyTreeOID is git's well-known empty-tree object. When two refs share no
-// common ancestor, diffing each against this tree yields "everything each side
-// contains", which lets both_touched / clean_merges still be computed instead of
-// silently going blank.
-const EmptyTreeOID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
 // Report is mergeprobe's payload: the one-turn answer to "what does this
 // topic/base pair conflict on, where, and how badly?" It is the stable stdout
 // contract, so field names and slice-vs-null shapes must stay put. Build it,

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/akira-toriyama/mergeprobe/internal/core"
+	"github.com/akira-toriyama/mergeprobe/internal/gittest"
 )
 
 // z builds -z merge-tree bytes the way git does (every field NUL-terminated),
@@ -35,6 +36,7 @@ type fakeGit struct {
 	markerSize func(tree, path string) (int, error)
 	commits    func(base, topic string) ([]core.Commit, error)
 	mergeTree3 func(mergeBase, ours, theirs string) ([]byte, bool, error)
+	emptyTree  func() (string, error)
 }
 
 func (f fakeGit) ResolveCommit(_ context.Context, ref string) (string, error) {
@@ -109,6 +111,12 @@ func (f fakeGit) CommitsToReplay(_ context.Context, base, topic string) ([]core.
 }
 func (f fakeGit) MergeTree3(_ context.Context, mergeBase, ours, theirs string) ([]byte, bool, error) {
 	return f.mergeTree3(mergeBase, ours, theirs)
+}
+func (f fakeGit) EmptyTree(context.Context) (string, error) {
+	if f.emptyTree != nil {
+		return f.emptyTree()
+	}
+	return gittest.EmptyTreeSHA1, nil
 }
 
 // fakeForge is an in-memory Forge port. baseRef/ok/err drive the base-resolution
@@ -586,6 +594,12 @@ func TestRun_GitPortErrorsPropagate(t *testing.T) {
 		}},
 		{"merge-tree", func(g *fakeGit) { g.mergeTree = func(b, tp string) ([]byte, bool, error) { return nil, false, boom } }},
 		{"merge-base", func(g *fakeGit) { g.mergeBase = func(a, b string) (string, bool, error) { return "", false, boom } }},
+		{"empty-tree", func(g *fakeGit) {
+			// Reachable only on the unrelated-histories path, so both mutations:
+			// no merge base AND the empty-tree resolution failing.
+			g.mergeBase = func(a, b string) (string, bool, error) { return "", false, nil }
+			g.emptyTree = func() (string, error) { return "", boom }
+		}},
 		{"diff-names", func(g *fakeGit) { g.diffNames = func(from, to string) ([]string, error) { return nil, boom } }},
 	}
 	for _, tc := range tests {
@@ -607,11 +621,16 @@ func TestRun_GitPortErrorsPropagate(t *testing.T) {
 	}
 }
 
+// Unrelated histories diff against the repository's own empty tree, obtained
+// through the EmptyTree port (object-format aware) — not the sha1 constant,
+// which does not resolve in a sha256 repository (t-rr68).
 func TestRun_NoMergeBaseUsesEmptyTree(t *testing.T) {
+	const repoEmpty = "empty-tree-oid-in-this-repos-format"
 	var diffFrom []string
 	g := fakeGit{
 		mergeTree: func(base, topic string) ([]byte, bool, error) { return z("t"), false, nil },
 		mergeBase: func(a, b string) (string, bool, error) { return "", false, nil },
+		emptyTree: func() (string, error) { return repoEmpty, nil },
 		diffNames: func(from, to string) ([]string, error) {
 			diffFrom = append(diffFrom, from)
 			return []string{"shared.txt"}, nil
@@ -622,8 +641,8 @@ func TestRun_NoMergeBaseUsesEmptyTree(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, from := range diffFrom {
-		if from != core.EmptyTreeOID {
-			t.Errorf("diff base = %q, want empty-tree OID for unrelated histories", from)
+		if from != repoEmpty {
+			t.Errorf("diff base = %q, want the port's empty tree %q", from, repoEmpty)
 		}
 	}
 	if r.MergeBase != "" {

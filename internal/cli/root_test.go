@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -517,6 +518,50 @@ func TestEndToEnd_RebaseOrphanTopicClean(t *testing.T) {
 	}
 	if !r.Rebaseable || r.Commits != 1 || r.Applied != 1 || r.Conflict != nil {
 		t.Errorf("clean orphan = %+v, want rebaseable/1/1/nil", r)
+	}
+}
+
+// The static probe's unrelated-histories diff base follows the repository's
+// object format: with the sha1 empty-tree constant a sha256 repo's DiffNames
+// died with exit 3 (t-rr68); now the verdict comes back normally.
+func TestEndToEnd_StaticOrphanSHA256(t *testing.T) {
+	dir := gittest.InitSHA256(t)
+	gittest.Write(t, dir, "shared.txt", "main version\n")
+	gittest.Write(t, dir, "main-only.txt", "m\n")
+	gittest.Write(t, dir, "twin.txt", "same on both sides\n")
+	gittest.Run(t, dir, "add", ".")
+	gittest.Run(t, dir, "commit", "-qm", "base")
+	gittest.Orphan(t, dir, "topic", "orphan root", map[string]string{
+		"shared.txt":      "orphan version\n",
+		"orphan-only.txt": "o\n",
+		"twin.txt":        "same on both sides\n",
+	})
+
+	stdout, stderr, code := runCLI(t, dir, "topic", "--onto", "main")
+	if code != int(core.CodeOK) {
+		t.Fatalf("exit = %d (want 0); stderr=%s", code, stderr)
+	}
+	var r core.Report
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if r.Mergeable {
+		t.Error("colliding orphan should not be mergeable")
+	}
+	if r.MergeBase != "" {
+		t.Errorf("unrelated histories should carry no merge_base, got %q", r.MergeBase)
+	}
+	if len(r.Conflicts) != 1 || r.Conflicts[0].Path != "shared.txt" || r.Conflicts[0].Class != core.ClassAddAdd {
+		t.Errorf("conflicts = %+v, want one add-add on shared.txt", r.Conflicts)
+	}
+	// The diff-derived fields the empty-tree base exists for: everything each
+	// side contains counts as changed, so the identical twin.txt is
+	// both-touched-clean and the three non-conflicted paths merge clean.
+	if !reflect.DeepEqual(r.BothTouchedClean, []string{"twin.txt"}) {
+		t.Errorf("BothTouchedClean = %v, want [twin.txt]", r.BothTouchedClean)
+	}
+	if r.CleanMerges != 3 { // main-only, orphan-only, twin
+		t.Errorf("CleanMerges = %d, want 3", r.CleanMerges)
 	}
 }
 

@@ -262,7 +262,7 @@ func (r *Repo) CommitsToReplay(ctx context.Context, base, topic string) ([]core.
 				"cannot simulate a rebase: %s..%s crosses the shallow-clone boundary at %.12s (its parents are hidden); fetch the full history (git fetch --unshallow) and retry",
 				base, topic, commits[i].OID)
 		}
-		empty, err := r.emptyTree(ctx)
+		empty, err := r.EmptyTree(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -285,11 +285,12 @@ func (r *Repo) isShallow(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(string(out)) == "true", nil
 }
 
-// emptyTree returns the empty tree's OID in the repository's object format.
-// hash-object computes it (sha1: core.EmptyTreeOID, sha256: its own hash), so
-// a sha256 repository gets a resolvable base where the sha1 constant would
-// make merge-tree die with "could not parse as tree". Stdin is nil (empty).
-func (r *Repo) emptyTree(ctx context.Context) (string, error) {
+// EmptyTree returns the empty tree's OID in the repository's object format.
+// hash-object computes it (sha1: the well-known 4b825dc6…, sha256: its own
+// hash), so a sha256 repository gets a resolvable OID where a hardcoded sha1
+// value would make merge-tree or diff die with an unparseable object. Stdin
+// is nil (empty).
+func (r *Repo) EmptyTree(ctx context.Context) (string, error) {
 	out, errb, code, err := r.run(ctx, "hash-object", "-t", "tree", "--stdin")
 	if err != nil {
 		return "", err

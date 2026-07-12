@@ -98,7 +98,11 @@ git 2.53 before fixing):
    without `--allow-unrelated-histories` fatals (exit 128), which mapped to
    CodeInternal (exit 3). The flag makes disjoint refs merge as add/add against
    the empty base; `MergeBase` then returns no ancestor, `merge_base` is omitted,
-   and both_touched/clean_merges diff against the empty tree.
+   and both_touched/clean_merges diff against the empty tree — whose OID comes
+   from the `EmptyTree` port, resolved by the adapter in the repository's own
+   object format (`hash-object -t tree`; the rebase path shares the same
+   method), because the well-known sha1 constant does not parse in a sha256
+   repository.
 6. **Oversized blobs are size-checked, never slurped.** A conflicted blob over 16
    MiB is flagged `truncated` with no inline sample instead of being read whole
    into memory (`cat-file -s` before `-p`) — the JSON stays bounded even when a
