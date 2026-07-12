@@ -12,6 +12,12 @@ import (
 	"testing"
 )
 
+// EmptyTreeSHA1 is git's well-known empty-tree OID in the sha1 object format —
+// the reference value tests assert the adapter's EmptyTree resolution against.
+// Production never hardcodes it: probes obtain the effective OID through the
+// Git port, which resolves it in the repository's own object format.
+const EmptyTreeSHA1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 // SkipIfNoGit skips the test when git is unavailable, so a machine without git
 // does not report a failure for something it cannot run.
 func SkipIfNoGit(t *testing.T) {
@@ -28,10 +34,33 @@ func Init(t *testing.T) string {
 	SkipIfNoGit(t)
 	dir := t.TempDir()
 	Run(t, dir, "init", "-q", "-b", "main")
+	pinIdentity(t, dir)
+	return dir
+}
+
+// InitSHA256 is Init for a sha256-object-format repository, skipping the test
+// when the installed git cannot create one — used to pin that OID handling
+// follows the repo's format instead of assuming sha1.
+func InitSHA256(t *testing.T) string {
+	t.Helper()
+	SkipIfNoGit(t)
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q", "-b", "main", "--object-format=sha256")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("sha256 object format unavailable: %v\n%s", err, out)
+	}
+	pinIdentity(t, dir)
+	return dir
+}
+
+// pinIdentity fixes the committer identity and disables signing so runs are
+// deterministic and hermetic regardless of the machine's global config.
+func pinIdentity(t *testing.T, dir string) {
+	t.Helper()
 	Run(t, dir, "config", "user.email", "test@mergeprobe.local")
 	Run(t, dir, "config", "user.name", "mergeprobe test")
 	Run(t, dir, "config", "commit.gpgsign", "false")
-	return dir
 }
 
 // Run executes git in dir and fails the test on error, returning trimmed stdout.

@@ -2,7 +2,6 @@ package git
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -387,6 +386,20 @@ func TestCommitsToReplay_MarksMergeCommits(t *testing.T) {
 	}
 }
 
+// EmptyTree resolves the well-known sha1 empty tree in a sha1 repo — the
+// direct pin that holds the fake's default and the real adapter together
+// (the sha256 side is pinned by TestCommitsToReplay_RootCommitSHA256).
+func TestEmptyTree(t *testing.T) {
+	r := New(gittest.Init(t))
+	oid, err := r.EmptyTree(context.Background())
+	if err != nil {
+		t.Fatalf("EmptyTree: %v", err)
+	}
+	if oid != gittest.EmptyTreeSHA1 {
+		t.Errorf("EmptyTree = %q, want %q", oid, gittest.EmptyTreeSHA1)
+	}
+}
+
 // A root commit (orphan topic) gets the repository's empty tree as its Parent:
 // its delta is everything it introduces. Parent must never reach the probe
 // empty — an empty --merge-base= kills git with exit 128 (t-m7sc).
@@ -405,25 +418,16 @@ func TestCommitsToReplay_RootCommitReplaysAgainstEmptyTree(t *testing.T) {
 	if len(commits) != 1 {
 		t.Fatalf("want 1 commit, got %+v", commits)
 	}
-	if commits[0].Parent != core.EmptyTreeOID {
-		t.Errorf("root Parent = %q, want the empty tree %q", commits[0].Parent, core.EmptyTreeOID)
+	if commits[0].Parent != gittest.EmptyTreeSHA1 {
+		t.Errorf("root Parent = %q, want the empty tree %q", commits[0].Parent, gittest.EmptyTreeSHA1)
 	}
 }
 
 // The empty-tree substitution follows the repository's object format: a sha256
-// repo has a different empty-tree OID than core.EmptyTreeOID (the sha1
+// repo has a different empty-tree OID than gittest.EmptyTreeSHA1 (the sha1
 // constant), and merge-tree must accept the substituted base there too.
 func TestCommitsToReplay_RootCommitSHA256(t *testing.T) {
-	gittest.SkipIfNoGit(t)
-	dir := t.TempDir()
-	init := exec.Command("git", "init", "-q", "-b", "main", "--object-format=sha256")
-	init.Dir = dir
-	if out, err := init.CombinedOutput(); err != nil {
-		t.Skipf("sha256 object format unavailable: %v\n%s", err, out)
-	}
-	gittest.Run(t, dir, "config", "user.email", "test@mergeprobe.local")
-	gittest.Run(t, dir, "config", "user.name", "mergeprobe test")
-	gittest.Run(t, dir, "config", "commit.gpgsign", "false")
+	dir := gittest.InitSHA256(t)
 	gittest.Write(t, dir, "shared.txt", "main version\n")
 	gittest.Run(t, dir, "add", ".")
 	gittest.Run(t, dir, "commit", "-qm", "base")
@@ -434,7 +438,7 @@ func TestCommitsToReplay_RootCommitSHA256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitsToReplay: %v", err)
 	}
-	if len(commits) != 1 || commits[0].Parent == "" || commits[0].Parent == core.EmptyTreeOID {
+	if len(commits) != 1 || commits[0].Parent == "" || commits[0].Parent == gittest.EmptyTreeSHA1 {
 		t.Fatalf("sha256 root Parent should be the sha256 empty tree, got %+v", commits)
 	}
 	// The substituted base must be usable by the replay step.
@@ -502,7 +506,7 @@ func TestCommitsToReplay_Empty(t *testing.T) {
 func TestMergeTree3_EmptyTreeMergeBase(t *testing.T) {
 	dir := rebaseScenario(t)
 	r := New(dir)
-	out, _, err := r.MergeTree3(context.Background(), core.EmptyTreeOID, "main", "topic")
+	out, _, err := r.MergeTree3(context.Background(), gittest.EmptyTreeSHA1, "main", "topic")
 	if err != nil {
 		t.Fatalf("MergeTree3 with empty-tree base: %v", err)
 	}

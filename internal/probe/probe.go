@@ -31,6 +31,10 @@ type Git interface {
 	// MergeBase returns the common-ancestor OID, ok=false when the two refs share
 	// no history.
 	MergeBase(ctx context.Context, a, b string) (oid string, ok bool, err error)
+	// EmptyTree returns the empty tree's OID in the repository's object format —
+	// the diff-base stand-in for unrelated histories. Resolved per repo because
+	// the well-known sha1 constant does not parse in a sha256 repository.
+	EmptyTree(ctx context.Context) (oid string, err error)
 	// DiffNames lists the paths that differ between two treeish.
 	DiffNames(ctx context.Context, from, to string) ([]string, error)
 	// ShowBlob returns the content of <treeish>:<path> (the merged tree carries
@@ -134,14 +138,18 @@ func Run(ctx context.Context, g Git, opts Options) (core.Report, error) {
 		Mergeable: !conflicted && parsed.Clean(),
 	}
 
-	// Determine the diff base: the merge base, or the empty tree when the two
-	// refs are unrelated (so both_touched / clean_merges stay meaningful).
-	diffBase := core.EmptyTreeOID
+	// Determine the diff base: the merge base, or the repository's empty tree
+	// when the two refs are unrelated (so both_touched / clean_merges stay
+	// meaningful). The empty tree comes from the port — object-format aware —
+	// and is only resolved on that rare unrelated-histories path.
+	var diffBase string
 	if mb, ok, err := g.MergeBase(ctx, base, topic); err != nil {
 		return core.Report{}, err
 	} else if ok {
 		diffBase = mb
 		report.MergeBase = shorten(mb)
+	} else if diffBase, err = g.EmptyTree(ctx); err != nil {
+		return core.Report{}, err
 	}
 
 	baseChanged, err := g.DiffNames(ctx, diffBase, base)
