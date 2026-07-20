@@ -17,7 +17,7 @@ jobs:
   # Shared Go CI core (build / vet / race-test / module-hygiene / golangci-lint v2),
   # SHA-pinned once in the hub. go-version-file drives the build toolchain.
   ci:
-    uses: akira-toriyama/.github/.github/workflows/go-ci.yml@v1
+    uses: akira-toriyama/.github/.github/workflows/go-ci.yml@v2
     with:
       go-version-file: go.mod
 
