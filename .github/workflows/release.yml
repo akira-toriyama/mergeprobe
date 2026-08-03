@@ -80,12 +80,12 @@ jobs:
             exit "$status"
           fi
 
-      # Skip the Homebrew cask push when the tap token is not configured, so a
+      # Skip the Homebrew cask push when the tap deploy key is not configured, so a
       # release still succeeds (binaries + checksums + attestation) and the cask
-      # can be published out of band. With the token set, the cask is pushed too.
+      # can be published out of band. With the key set, the cask is pushed too.
       - id: args
         env:
-          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           base="release --clean --release-notes ${{ runner.temp }}/CHANGELOG.md"
           if [ -z "$TAP" ]; then base="$base --skip=homebrew"; fi
@@ -98,8 +98,9 @@ jobs:
           args: ${{ steps.args.outputs.value }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Fine-grained PAT with Contents:R/W on akira-toriyama/homebrew-tap.
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Private half of homebrew-tap's write deploy key (fleet-sync fans it
+          # out); GoReleaser pushes the cask over SSH with it. t-6bhz
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
 
       # Build provenance: a free, keyless GitHub attestation binding each release
       # artifact's digest to THIS workflow run.
