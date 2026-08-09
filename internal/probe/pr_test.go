@@ -49,7 +49,6 @@ func TestParsePRRef(t *testing.T) {
 	}
 }
 
-// ctx is a tiny helper so the resolve tests read cleanly.
 func ctx() context.Context { return context.Background() }
 
 // bare PR + gh answers the base: fetch both head and base from origin, pin both
