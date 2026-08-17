@@ -1,5 +1,5 @@
 // Package cli is the cobra adapter — mergeprobe's command-line presentation
-// layer. It parses flags, will call the pure core for every operation, and
+// layer. It parses flags, delegates every operation to the probe use case, and
 // renders the result. It holds no domain logic. stdout carries pipeable
 // payload only; diagnostics and error envelopes go to stderr.
 package cli
