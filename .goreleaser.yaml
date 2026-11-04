@@ -49,7 +49,7 @@ homebrew_casks:
     commit_author:
       name: akira-toriyama
       email: imatomiyuichi@gmail.com
-    commit_msg_template: "homebrew: update {{ .ProjectName }} cask to {{ .Tag }}"
+    commit_msg_template: ":package:(tap)= bump {{ .ProjectName }} to {{ .Tag }}"
     # The binary is unsigned; strip the quarantine xattr on macOS so Gatekeeper
     # allows launch (same pattern as the family's other casks).
     hooks:
